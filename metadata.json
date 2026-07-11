@@ -1,0 +1,10 @@
+{
+  "name": "Amapola - Guía Pediátrica",
+  "description": "Orientación en primeros auxilios pediátricos y síntomas comunes para padres, con asistente médico inteligente RAG, biblioteca de emergencias, calendario de vacunas y reportes multimodales (audio/imagen).",
+  "requestFramePermissions": [
+    "geolocation"
+  ],
+  "majorCapabilities": [
+    "MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"
+  ]
+}
