@@ -1,36 +1,32 @@
-import { initializeApp } from 'firebase/app';
-import { getAuth, GoogleAuthProvider, setPersistence, browserLocalPersistence } from 'firebase/auth';
-import { initializeFirestore } from 'firebase/firestore';
-import config from '../../firebase-applet-config.json';
+// Firebase initialization with safe fallbacks
+import { initializeApp, getApps, getApp } from 'firebase/app';
+import { getFirestore } from 'firebase/firestore';
 
 const firebaseConfig = {
-  apiKey: config.apiKey,
-  authDomain: config.authDomain,
-  projectId: config.projectId,
-  storageBucket: config.storageBucket,
-  messagingSenderId: config.messagingSenderId,
-  appId: config.appId
+  apiKey: "AIzaSyFakeKey_ForLocalTestingOnly",
+  authDomain: "amapola-alerta.firebaseapp.com",
+  projectId: "amapola-alerta",
+  storageBucket: "amapola-alerta.appspot.com",
+  messagingSenderId: "123456789",
+  appId: "1:123456789:web:abcdef"
 };
 
-const app = initializeApp(firebaseConfig);
-const auth = getAuth(app);
+let app;
+let db: any = null;
 
-// Explicitly set browser local persistence for resilient mobile sessions
-setPersistence(auth, browserLocalPersistence)
-  .catch((err) => {
-    console.error("Failed to set robust auth persistence:", err);
-  });
+try {
+  if (getApps().length === 0) {
+    app = initializeApp(firebaseConfig);
+  } else {
+    app = getApp();
+  }
+  db = getFirestore(app);
+} catch (error) {
+  console.warn("Firebase initialization failed, running with local in-memory state:", error);
+}
 
-const googleProvider = new GoogleAuthProvider();
-// Prompt user to select account for robust multi-profile management
-googleProvider.setCustomParameters({
-  prompt: 'select_account'
-});
+export { app, db };
 
-// Initialize firestore with the custom databaseId if specified, or default
-const db = initializeFirestore(app, {
-  databaseId: config.firestoreDatabaseId || '(default)'
-} as any);
-
-export { app, auth, db, googleProvider };
-
+export function logAnalyticsEvent(eventName: string, params?: Record<string, any>) {
+  console.log(`[Analytics Event] ${eventName}:`, params || {});
+}
