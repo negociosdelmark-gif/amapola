@@ -3,7 +3,8 @@
   "description": "Portal inteligente de urgencias pediátricas, cuidado infantil, seguimiento de vacunas y primeros auxilios con mapas en tiempo real",
   "requestFramePermissions": [
     "geolocation",
-    "microphone"
+    "microphone",
+    "camera"
   ],
   "majorCapabilities": [
     "MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"

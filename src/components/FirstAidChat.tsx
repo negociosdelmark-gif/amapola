@@ -174,9 +174,15 @@ export default function FirstAidChat() {
     logAnalyticsEvent("send_chat_message", { length: text.length });
 
     try {
+      const customKey = localStorage.getItem('amapola_custom_gemini_api_key') || '';
+      const headers: Record<string, string> = { "Content-Type": "application/json" };
+      if (customKey) {
+        headers["x-gemini-api-key"] = customKey;
+      }
+
       const response = await fetch("/api/chat", {
         method: "POST",
-        headers: { "Content-Type": "application/json" },
+        headers,
         body: JSON.stringify({
           messages: [...messages, userMessage],
         }),

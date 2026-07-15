@@ -1,13 +1,15 @@
 import { useState, useEffect, useRef } from 'react';
 import { 
   Heart, Calendar, ShieldCheck, CheckCircle2, Sparkles, BookOpen,
-  TrendingUp, Plus, Trash2, RotateCcw, BarChart3, Lightbulb, Download,
-  Bell, BellOff, Share2, Search, Award, Star, Medal, Trophy,
+  TrendingUp, Plus, Trash2, RotateCcw, BarChart3, Lightbulb, Download, Printer, Camera,
+  Bell, BellOff, Share2, Award, Star, Medal, Trophy,
   Wind, Flame, Activity, Stethoscope, ChevronRight, ChevronDown, Maximize, Minimize,
   Timer, Play, Pause, Square, Mic, MicOff, Volume2, Zap, Dumbbell, Moon, Sun,
-  Bath, BedDouble, Sofa, Utensils, Baby, Droplet, Car, TreePine, Home, Edit3, 
+  Bath, BedDouble, Sofa, Utensils, Baby, Droplet, Car, TreePine, Home, Edit3,
+  Eye, EyeOff, Settings, Search, X, Filter, AlertTriangle, Info,
 } from 'lucide-react';
 import { motion, AnimatePresence } from 'motion/react';
+import ReactMarkdown from 'react-markdown';
 import { 
   ResponsiveContainer, PieChart, Pie, Cell,
   BarChart, Bar, XAxis, YAxis, Tooltip, CartesianGrid,
@@ -17,10 +19,17 @@ import EmergencyPanel from './components/EmergencyPanel';
 import VaccineTracker from './components/VaccineTracker';
 import MaternalWellbeing from './components/MaternalWellbeing';
 import GrandmaTips from './components/GrandmaTips';
+import VoiceSearchAssistant from './components/VoiceSearchAssistant';
+import UrgentRisksChart from './components/UrgentRisksChart';
+import ChildHealthTracker from './components/ChildHealthTracker';
+import PreventionStreak from './components/PreventionStreak';
+import AreaCompletionMedal from './components/AreaCompletionMedal';
 import { logAnalyticsEvent } from './lib/firebase';
-import confetti from 'canvas-confetti';
+import { speakText, stopSpeaking, isAutoReadEnabled, setAutoReadEnabled } from './lib/tts';
+import { getGoogleCalendarLink, getOutlookCalendarLink, downloadICSFile } from './utils/calendar';
+import { exportSafetyChecklistPDF } from './utils/pdfGenerator';
 
-type TabType = 'emergency' | 'vaccines' | 'prevention' | 'wellbeing' | 'tips';
+type TabType = 'emergency' | 'vaccines' | 'prevention' | 'wellbeing' | 'tips' | 'health';
 
 interface PreventionTopic {
   id: string;
@@ -196,51 +205,105 @@ export default function App() {
   const [chartView, setChartView] = useState<'evolution' | 'comparison'>('evolution');
   const [activeFirstAidId, setActiveFirstAidId] = useState<string | null>(null);
   
+  // Voice auto-read states
+  const [autoRead, setAutoRead] = useState(() => isAutoReadEnabled());
+
+  useEffect(() => {
+    setAutoReadEnabled(autoRead);
+  }, [autoRead]);
+  
+  // Custom API key states
+  const [isSettingsOpen, setIsSettingsOpen] = useState(false);
+  const [tempApiKey, setTempApiKey] = useState(() => localStorage.getItem('amapola_custom_gemini_api_key') || '');
+  const [showApiKey, setShowApiKey] = useState(false);
+  const [testStatus, setTestStatus] = useState<'idle' | 'testing' | 'success' | 'error'>('idle');
+  const [testErrorMessage, setTestErrorMessage] = useState('');
+
+  const handleTestConnection = async () => {
+    if (!tempApiKey.trim()) {
+      setTestStatus('error');
+      setTestErrorMessage('Por favor ingresa una clave de API.');
+      return;
+    }
+    
+    setTestStatus('testing');
+    try {
+      const response = await fetch('/api/test-connection', {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+          'x-gemini-api-key': tempApiKey.trim()
+        }
+      });
+      const data = await response.json();
+      if (data.success) {
+        setTestStatus('success');
+      } else {
+        setTestStatus('error');
+        setTestErrorMessage(data.error || 'Error de conexión.');
+      }
+    } catch (e: any) {
+      setTestStatus('error');
+      setTestErrorMessage(e.message || 'Error de red.');
+    }
+  };
+
+  const handleSaveApiKey = () => {
+    localStorage.setItem('amapola_custom_gemini_api_key', tempApiKey.trim());
+    setIsSettingsOpen(false);
+    window.location.reload();
+  };
+
+  const handleClearApiKey = () => {
+    localStorage.removeItem('amapola_custom_gemini_api_key');
+    setTempApiKey('');
+    setTestStatus('idle');
+    setIsSettingsOpen(false);
+    window.location.reload();
+  };
+  
   // Search and Filter state
   const searchInputRef = useRef<HTMLInputElement>(null);
+  const roomSearchInputRef = useRef<HTMLInputElement>(null);
   const [preventionSearch, setPreventionSearch] = useState('');
+  const [roomSearchQuery, setRoomSearchQuery] = useState('');
+  const [selectedCategories, setSelectedCategories] = useState<string[]>([]);
+  const [isCategoryMenuOpen, setIsCategoryMenuOpen] = useState(false);
   const [effortFilter, setEffortFilter] = useState<'Todos' | 'Fácil' | 'Medio' | 'Difícil'>('Todos');
   const [statusFilter, setStatusFilter] = useState<'Todos' | 'Pendientes'>('Todos');
   const [urgencySort, setUrgencySort] = useState<boolean>(false);
+  const [onlyHighUrgency, setOnlyHighUrgency] = useState<boolean>(false);
   const [viewMode, setViewMode] = useState<'Checklists' | 'Historial'>('Checklists');
+  const [generalInspectionDate, setGeneralInspectionDate] = useState<string>(() => {
+    const tomorrow = new Date();
+    tomorrow.setDate(tomorrow.getDate() + 1);
+    return tomorrow.toISOString().split('T')[0];
+  });
+  const [showGeneralInspectionModal, setShowGeneralInspectionModal] = useState(false);
+  const [showTrendsWidget, setShowTrendsWidget] = useState(true);
+  const [showSummaryReportModal, setShowSummaryReportModal] = useState(false);
+  const [summaryReportText, setSummaryReportText] = useState('');
+  const [isLoadingSummaryReport, setIsLoadingSummaryReport] = useState(false);
+  const [copied, setCopied] = useState(false);
   const [annualRange, setAnnualRange] = useState<'6' | '12'>('12');
   const [isNightMode, setIsNightMode] = useState(false);
   const [isAccessibilityMode, setIsAccessibilityMode] = useState(false);
   const [contextMenu, setContextMenu] = useState<{ x: number, y: number, topicId: string } | null>(null);
   const [hazardDetailModalData, setHazardDetailModalData] = useState<{isOpen: boolean, hazard: any, topicName: string}>({isOpen: false, hazard: null, topicName: ''});
-  const [isListening, setIsListening] = useState(false);
+  const [toast, setToast] = useState<{ message: string; type: 'success' | 'error' | 'info' } | null>(null);
 
-  const startVoiceSearch = () => {
-    const SpeechRecognition = (window as any).SpeechRecognition || (window as any).webkitSpeechRecognition;
-    if (SpeechRecognition) {
-      const recognition = new SpeechRecognition();
-      recognition.lang = 'es-ES';
-      recognition.continuous = false;
-      recognition.interimResults = false;
-
-      recognition.onstart = () => {
-        setIsListening(true);
-      };
-
-      recognition.onresult = (event: any) => {
-        const transcript = event.results[0][0].transcript;
-        setPreventionSearch(transcript);
-      };
-
-      recognition.onerror = (event: any) => {
-        console.error('Speech recognition error', event.error);
-        setIsListening(false);
-      };
-
-      recognition.onend = () => {
-        setIsListening(false);
-      };
-
-      recognition.start();
-    } else {
-      alert("Tu navegador no soporta búsqueda por voz.");
-    }
+  const showToast = (message: string, type: 'success' | 'error' | 'info' = 'success') => {
+    setToast({ message, type });
   };
+
+  useEffect(() => {
+    if (toast) {
+      const timer = setTimeout(() => {
+        setToast(null);
+      }, 4000);
+      return () => clearTimeout(timer);
+    }
+  }, [toast]);
 
   useEffect(() => {
     const handleClick = () => setContextMenu(null);
@@ -266,6 +329,7 @@ export default function App() {
   
   // Weekly tip state
   const [weeklyTip, setWeeklyTip] = useState('');
+  const [showTipCalendarDropdown, setShowTipCalendarDropdown] = useState(false);
   useEffect(() => {
     const today = new Date();
     // Use the week number of the year to select a tip so it changes weekly, but for simplicity here we can just use the day of the year
@@ -325,6 +389,23 @@ export default function App() {
     return () => clearTimeout(timer);
   }, []);
 
+  // Previous safety levels per room (for comparative trends widget)
+  const [previousAreaSafety, setPreviousAreaSafety] = useState<Record<string, number>>(() => {
+    const saved = localStorage.getItem('amapola_areas_previous_safety');
+    if (saved) {
+      try { return JSON.parse(saved); } catch (e) { }
+    }
+    return {
+      '1': 25, // Cocina: 25% previously
+      '2': 50, // Baño: 50% previously
+      '3': 25, // Sala y Dormitorio: 25% previously
+    };
+  });
+
+  useEffect(() => {
+    localStorage.setItem('amapola_areas_previous_safety', JSON.stringify(previousAreaSafety));
+  }, [previousAreaSafety]);
+
   // Safety history state
   const [safetyHistory, setSafetyHistory] = useState<SafetyHistoryRecord[]>(() => {
     const saved = localStorage.getItem('amapola_safety_history');
@@ -355,9 +436,51 @@ export default function App() {
     logAnalyticsEvent('view_screen', { screen_name: activeTab });
   }, [activeTab]);
 
+  // Auto-read voice assistant on navigating sections and first aid guides
+  useEffect(() => {
+    if (!autoRead) {
+      stopSpeaking();
+      return;
+    }
+
+    if (activeTab === 'tips') {
+      speakText('Sección: Consejos de la Abuela. Aquí tienes sabiduría tradicional y segura para el cuidado de tu bebé. Pulsa en cualquiera para escucharla.');
+    } else if (activeTab === 'emergency') {
+      if (!activeFirstAidId) {
+        speakText('Sección: Emergencias y Primeros Auxilios. Consulta guías de acción rápida o activa las maniobras interactivas paso a paso.');
+      }
+    } else if (activeTab === 'vaccines') {
+      speakText('Sección: Calendario de Vacunas. Lleva un control riguroser de las inmunizaciones de tu bebé.');
+    } else if (activeTab === 'prevention') {
+      speakText('Sección: Checklists de Prevención. Inspecciona cada habitación para detectar y prevenir riesgos.');
+    } else if (activeTab === 'wellbeing') {
+      speakText('Sección: Bienestar Materno. Seguimiento del estado de ánimo, diario emocional y respiración consciente.');
+    } else if (activeTab === 'health') {
+      speakText('Sección: Salud Infantil. Registra y haz un seguimiento del peso, la talla y las alergias conocidas de tus niños.');
+    }
+  }, [activeTab, autoRead]);
+
+  useEffect(() => {
+    if (!autoRead) return;
+
+    if (activeFirstAidId) {
+      const guide = FIRST_AID_GUIDES.find(g => g.id === activeFirstAidId);
+      if (guide) {
+        const stepsText = guide.steps.map((s, idx) => `Paso ${idx + 1}: ${s}`).join('. ');
+        speakText(`Guía de Primeros Auxilios para ${guide.title}. ${stepsText}`);
+      }
+    } else {
+      stopSpeaking();
+    }
+  }, [activeFirstAidId, autoRead]);
+
   // Local Notifications state
   const [notificationsEnabled, setNotificationsEnabled] = useState<boolean>(() => {
     return localStorage.getItem('amapola_notifications_enabled') === 'true';
+  });
+
+  const [preferredNotificationTime, setPreferredNotificationTime] = useState<string>(() => {
+    return localStorage.getItem('amapola_notification_time') || '09:00';
   });
 
   const toggleNotifications = async () => {
@@ -390,62 +513,134 @@ export default function App() {
     }
   };
 
-  // Check for weekly reminder on load
+  const sendTestNotification = () => {
+    if ('Notification' in window) {
+      if (Notification.permission === 'granted') {
+        new Notification('Amapola Alerta: Notificación de Prueba', {
+          body: `¡Funciona! Recibirás los recordatorios semanales a las ${preferredNotificationTime}.`,
+          icon: '/vite.svg'
+        });
+      } else {
+        alert('Por favor, activa primero los avisos/notificaciones y permite el acceso en tu navegador.');
+      }
+    } else {
+      alert('Este navegador no soporta notificaciones.');
+    }
+  };
+
+  // Check for weekly reminder on load & periodically
   useEffect(() => {
-    if (notificationsEnabled && 'Notification' in window && Notification.permission === 'granted') {
+    if (!notificationsEnabled || !('Notification' in window) || Notification.permission !== 'granted') {
+      return;
+    }
+
+    const checkAndTriggerNotification = () => {
       const lastReminder = localStorage.getItem('amapola_last_reminder');
-      const now = new Date().getTime();
+      const now = new Date();
+      const nowMs = now.getTime();
       const ONE_WEEK_MS = 7 * 24 * 60 * 60 * 1000;
-      
+
       let shouldNotify = false;
       if (!lastReminder) {
-        localStorage.setItem('amapola_last_reminder', new Date().toISOString());
+        // First setup
+        localStorage.setItem('amapola_last_reminder', now.toISOString());
       } else {
         const lastTime = new Date(lastReminder).getTime();
-        if (now - lastTime > ONE_WEEK_MS) {
-          shouldNotify = true;
+        // Check if more than a week has passed
+        if (nowMs - lastTime >= ONE_WEEK_MS) {
+          // Check if current hour and minute matches or is past the preferred hour and minute today
+          const [prefHour, prefMin] = preferredNotificationTime.split(':').map(Number);
+          const currentHour = now.getHours();
+          const currentMin = now.getMinutes();
+
+          const isAtOrPastPreferredTime = (currentHour > prefHour) || (currentHour === prefHour && currentMin >= prefMin);
+          if (isAtOrPastPreferredTime) {
+            shouldNotify = true;
+          }
         }
       }
 
       if (shouldNotify) {
-        new Notification('Amapola Alerta: Revisión Semanal', {
+        new Notification('Amapola Alerta: Revisión Semanal de Seguridad', {
           body: 'Es momento de revisar tu lista de prevención de seguridad infantil. ¡Tu progreso te espera!',
           icon: '/vite.svg'
         });
-        localStorage.setItem('amapola_last_reminder', new Date().toISOString());
+        localStorage.setItem('amapola_last_reminder', now.toISOString());
+        logAnalyticsEvent('weekly_safety_reminder_sent', { time: preferredNotificationTime });
       }
-    }
-  }, [notificationsEnabled]);
+    };
+
+    // Run on mount
+    checkAndTriggerNotification();
+
+    // Check every 30 seconds
+    const interval = setInterval(checkAndTriggerNotification, 30000);
+    return () => clearInterval(interval);
+  }, [notificationsEnabled, preferredNotificationTime]);
 
   const handleShareArea = async (topic: PreventionTopic, securedCount: number) => {
+    const completedTasks = topic.hazards.filter(h => h.completed).map(h => `✓ ${h.text}`).join('\n');
+    const pendingTasks = topic.hazards.filter(h => !h.completed).map(h => `⚠ ${h.text}`).join('\n');
     const isSecured = securedCount === topic.hazards.length;
-    const text = `Seguridad en ${topic.room}: ${securedCount}/${topic.hazards.length} tareas completadas.${isSecured ? ' ¡Área 100% segura! 🎉' : ''} #AmapolaAlerta`;
     
+    let text = `🛡️ Amapola Alerta: Estado de Seguridad en ${topic.room}${isSecured ? ' (¡100% Seguro! 🎉)' : ''}\n\n`;
+    text += `Progreso: ${securedCount}/${topic.hazards.length} medidas aseguradas (${Math.round((securedCount / topic.hazards.length) * 100)}%)\n`;
+    text += `Recomendación: ${topic.guideline}\n\n`;
+    
+    if (completedTasks) {
+      text += `Medidas listadas como seguras:\n${completedTasks}\n\n`;
+    }
+    if (pendingTasks) {
+      text += `Medidas aún pendientes por asegurar:\n${pendingTasks}\n\n`;
+    }
+    
+    text += `¡Mantengamos a nuestros niños seguros! 🌸\nEnlace: ${window.location.href}`;
+
     if (navigator.share) {
       try {
         await navigator.share({
-          title: `Amapola Alerta - ${topic.title}`,
+          title: `Amapola Alerta - ${topic.room}`,
           text: text,
           url: window.location.href,
         });
-      } catch (err) {
-        console.log('Error compartiendo:', err);
+        showToast('¡Estado compartido con éxito!', 'success');
+      } catch (err: any) {
+        if (err.name !== 'AbortError') {
+          console.log('Error sharing, falling back to clipboard:', err);
+          try {
+            await navigator.clipboard.writeText(text);
+            showToast('Estado de la habitación copiado al portapapeles', 'success');
+          } catch (clipErr) {
+            showToast('No se pudo copiar al portapapeles', 'error');
+          }
+        }
       }
     } else {
-      navigator.clipboard.writeText(text);
-      alert('Texto copiado al portapapeles');
+      try {
+        await navigator.clipboard.writeText(text);
+        showToast('Estado de la habitación copiado al portapapeles', 'success');
+      } catch (clipErr) {
+        showToast('No se pudo copiar al portapapeles', 'error');
+      }
     }
   };
 
   const [recheckModalData, setRecheckModalData] = useState<{ isOpen: boolean; topicName: string }>({ isOpen: false, topicName: '' });
+  const [completedMedalRoom, setCompletedMedalRoom] = useState<string | null>(null);
   const [proTipsModalData, setProTipsModalData] = useState<{ isOpen: boolean; topicName: string; tips: string; isLoading: boolean }>({ isOpen: false, topicName: '', tips: '', isLoading: false });
 
   const handleOpenProTips = async (topic: PreventionTopic) => {
     setProTipsModalData({ isOpen: true, topicName: topic.room, tips: '', isLoading: true });
     try {
+      const customKey = localStorage.getItem('amapola_custom_gemini_api_key') || '';
+      const headers: Record<string, string> = { 'Content-Type': 'application/json' };
+      if (customKey) {
+        headers['x-gemini-api-key'] = customKey;
+      }
+
       const response = await fetch('/api/generate-pro-tips', {
         method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
+        headers,
         body: JSON.stringify({
           topicName: topic.room,
           expandedInfo: topic.expandedInfo,
@@ -472,6 +667,16 @@ export default function App() {
         e.preventDefault();
         searchInputRef.current?.focus();
       }
+
+      // Ctrl+Shift+P or Cmd+Shift+P to open directly the room search query
+      if ((e.ctrlKey || e.metaKey) && e.shiftKey && e.key.toLowerCase() === 'p') {
+        e.preventDefault();
+        setActiveTab('prevention');
+        setTimeout(() => {
+          roomSearchInputRef.current?.focus();
+          roomSearchInputRef.current?.select();
+        }, 100);
+      }
       
       // Esc to close modals/expanders
       if (e.key === 'Escape') {
@@ -491,7 +696,7 @@ export default function App() {
 
     window.addEventListener('keydown', handleKeyDown);
     return () => window.removeEventListener('keydown', handleKeyDown);
-  }, [proTipsModalData.isOpen, recheckModalData.isOpen, focusModeTopicId, expandedInfoId, activeFirstAidId]);
+  }, [proTipsModalData.isOpen, recheckModalData.isOpen, focusModeTopicId, expandedInfoId, activeFirstAidId, setActiveTab]);
   
   const [autoCompletingId, setAutoCompletingId] = useState<string | null>(null);
 
@@ -538,11 +743,15 @@ export default function App() {
 
     setIsGeneratingVoiceText(true);
     try {
+      const customKey = localStorage.getItem('amapola_custom_gemini_api_key') || '';
+      const headers: Record<string, string> = { 'Content-Type': 'application/json' };
+      if (customKey) {
+        headers['x-gemini-api-key'] = customKey;
+      }
+
       const response = await fetch('/api/generate-educational-summary', {
         method: 'POST',
-        headers: {
-          'Content-Type': 'application/json'
-        },
+        headers,
         body: JSON.stringify({
           topicName: topic.room,
           expandedInfo: topic.expandedInfo,
@@ -724,6 +933,10 @@ export default function App() {
                 completed: nextVal 
               });
               
+              if (nextVal) {
+                window.dispatchEvent(new CustomEvent('amapola_hazard_completed', { detail: { completed: true } }));
+              }
+              
               if (focusModeTopicId === topicId) {
                 if (nextVal) {
                   setCurrentFocusSessionTasksCompleted(prevCount => prevCount + 1);
@@ -755,16 +968,9 @@ export default function App() {
       setCompletedAreaId(justCompletedTopicId);
       setTimeout(() => setCompletedAreaId(null), 2500); // Glow for 2.5s
       
-      confetti({
-        particleCount: 150,
-        spread: 70,
-        origin: { y: 0.6 },
-        colors: ['#3b82f6', '#10b981', '#f59e0b', '#ec4899', '#8b5cf6']
-      });
-
       setTimeout(() => {
-         setRecheckModalData({ isOpen: true, topicName: newlyCompletedTopicName });
-      }, 2000); // Delay modal a bit more so confetti can be enjoyed
+        setCompletedMedalRoom(newlyCompletedTopicName);
+      }, 400);
     }
   };
 
@@ -807,18 +1013,249 @@ export default function App() {
         setCompletedAreaId(justCompletedTopicId);
         setTimeout(() => setCompletedAreaId(null), 2500);
         
-        confetti({
-          particleCount: 150,
-          spread: 70,
-          origin: { y: 0.6 },
-          colors: ['#3b82f6', '#10b981', '#f59e0b', '#ec4899', '#8b5cf6']
-        });
-
         setTimeout(() => {
-           setRecheckModalData({ isOpen: true, topicName: newlyCompletedTopicName });
-        }, 2000);
+          setCompletedMedalRoom(newlyCompletedTopicName);
+        }, 400);
       }
     }, 800);
+  };
+
+  const handleDownloadGeneralInspectionICS = () => {
+    if (!generalInspectionDate) return;
+    
+    const [year, month, day] = generalInspectionDate.split('-').map(Number);
+    // Set start to 10:00 AM of the selected date
+    const eventDate = new Date(year, month - 1, day, 10, 0, 0);
+    
+    const start = eventDate.toISOString().replace(/-|:|\.\d+/g, '').split('.')[0] + 'Z';
+    const end = new Date(eventDate.getTime() + 2 * 60 * 60 * 1000).toISOString().replace(/-|:|\.\d+/g, '').split('.')[0] + 'Z'; // 2 hours duration
+
+    const eventName = 'Inspección General de Seguridad Infantil';
+    const description = 'Revisión completa de las medidas de seguridad y checklists de todas las áreas del hogar para prevenir accidentes infantiles.';
+
+    const icsContent = [
+      'BEGIN:VCALENDAR',
+      'VERSION:2.0',
+      'PRODID:-//Amapola Alerta//ES',
+      'BEGIN:VEVENT',
+      `UID:general-inspection-${eventDate.getTime()}@amapola-alerta.local`,
+      `DTSTAMP:${start}`,
+      `DTSTART:${start}`,
+      `DTEND:${end}`,
+      `SUMMARY:${eventName}`,
+      `DESCRIPTION:${description}`,
+      'END:VEVENT',
+      'END:VCALENDAR'
+    ].join('\r\n');
+
+    const blob = new Blob([icsContent], { type: 'text/calendar;charset=utf-8' });
+    const url = window.URL.createObjectURL(blob);
+    const link = document.createElement('a');
+    link.href = url;
+    link.setAttribute('download', 'inspeccion-general-seguridad.ics');
+    document.body.appendChild(link);
+    link.click();
+    document.body.removeChild(link);
+    window.URL.revokeObjectURL(url);
+    
+    // Also export the Safety Checklist PDF report!
+    try {
+      exportSafetyChecklistPDF(preventionTopics, generalInspectionDate);
+      logAnalyticsEvent('schedule_general_inspection_pdf_export', { date: generalInspectionDate });
+    } catch (err) {
+      console.error('Error generating general inspection PDF report:', err);
+    }
+    
+    logAnalyticsEvent('schedule_general_inspection_ics', { date: generalInspectionDate });
+  };
+
+  const handleShareGeneralInspection = async () => {
+    if (!generalInspectionDate) return;
+
+    const [year, month, day] = generalInspectionDate.split('-');
+    const months = [
+      'enero', 'febrero', 'marzo', 'abril', 'mayo', 'junio',
+      'julio', 'agosto', 'septiembre', 'octubre', 'noviembre', 'diciembre'
+    ];
+    const formattedDate = `${parseInt(day, 10)} de ${months[parseInt(month, 10) - 1]} de ${year}`;
+    
+    const shareText = `Tengo programada una Inspección General de Seguridad Infantil en mi hogar para el día ${formattedDate}. ¡La seguridad de nuestros niños es lo primero! Revisa el checklist de seguridad infantil aquí:`;
+    const shareUrl = window.location.href;
+
+    if (navigator.share) {
+      try {
+        await navigator.share({
+          title: 'Amapola Alerta - Inspección General de Seguridad',
+          text: `${shareText} ${shareUrl}`,
+          url: shareUrl,
+        });
+        logAnalyticsEvent('share_general_inspection_api', { date: generalInspectionDate });
+        showToast('¡Inspección general compartida con éxito!', 'success');
+      } catch (err) {
+        console.log('Error compartiendo:', err);
+      }
+    } else {
+      try {
+        await navigator.clipboard.writeText(`${shareText} ${shareUrl}`);
+        showToast('Resumen de inspección copiado al portapapeles. ¡Compártelo con tu familia!', 'success');
+        logAnalyticsEvent('share_general_inspection_clipboard', { date: generalInspectionDate });
+      } catch (err) {
+        console.log('Error copiando al portapapeles:', err);
+      }
+    }
+  };
+
+  const handleExportChecklist = () => {
+    try {
+      const exportData = {
+        preventionTopics,
+        safetyHistory
+      };
+      const dataStr = "data:text/json;charset=utf-8," + encodeURIComponent(JSON.stringify(exportData, null, 2));
+      const downloadAnchor = document.createElement('a');
+      downloadAnchor.setAttribute("href", dataStr);
+      downloadAnchor.setAttribute("download", `amapola_alerta_checklist_${new Date().toISOString().split('T')[0]}.json`);
+      document.body.appendChild(downloadAnchor);
+      downloadAnchor.click();
+      downloadAnchor.remove();
+      logAnalyticsEvent('checklist_exported', { count: preventionTopics.length, historyCount: safetyHistory.length });
+    } catch (error) {
+      console.error("Error al exportar el checklist:", error);
+      alert("Hubo un error al exportar su checklist.");
+    }
+  };
+
+  const handleGenerateSummaryReport = async () => {
+    setIsLoadingSummaryReport(true);
+    setShowSummaryReportModal(true);
+    setSummaryReportText('');
+    try {
+      const customKey = localStorage.getItem('amapola_custom_gemini_api_key') || '';
+      const headers: Record<string, string> = { 'Content-Type': 'application/json' };
+      if (customKey) {
+        headers['x-gemini-api-key'] = customKey;
+      }
+
+      const response = await fetch('/api/generate-summary-report', {
+        method: 'POST',
+        headers,
+        body: JSON.stringify({
+          preventionTopics: preventionTopics
+        })
+      });
+      const data = await response.json();
+      setSummaryReportText(data.summary || 'No se pudo generar el reporte ejecutivo.');
+    } catch (error) {
+      console.error("Error fetching summary report:", error);
+      setSummaryReportText('Lo sentimos, ocurrió un error al comunicarse con el servicio de Inteligencia Artificial para generar el informe. Por favor, inténtalo de nuevo.');
+    } finally {
+      setIsLoadingSummaryReport(false);
+    }
+  };
+
+  const handleCopySummary = () => {
+    navigator.clipboard.writeText(summaryReportText);
+    setCopied(true);
+    showToast('Informe copiado al portapapeles', 'success');
+    setTimeout(() => setCopied(false), 2000);
+  };
+
+  const handleShareSummaryReport = async () => {
+    let textToShare = summaryReportText;
+    
+    if (!textToShare) {
+      showToast('Generando resumen para compartir...', 'info');
+      try {
+        const customKey = localStorage.getItem('amapola_custom_gemini_api_key') || '';
+        const headers: Record<string, string> = { 'Content-Type': 'application/json' };
+        if (customKey) {
+          headers['x-gemini-api-key'] = customKey;
+        }
+
+        const response = await fetch('/api/generate-summary-report', {
+          method: 'POST',
+          headers,
+          body: JSON.stringify({
+            preventionTopics: preventionTopics
+          })
+        });
+        const data = await response.json();
+        textToShare = data.summary || '';
+        if (textToShare) {
+          setSummaryReportText(textToShare);
+        }
+      } catch (error) {
+        console.error("Error generating summary for sharing:", error);
+      }
+    }
+
+    if (!textToShare) {
+      let totalTasks = 0;
+      let completedTasks = 0;
+      preventionTopics.forEach(t => {
+        t.hazards.forEach(h => {
+          totalTasks++;
+          if (h.completed) completedTasks++;
+        });
+      });
+      const pct = totalTasks > 0 ? Math.round((completedTasks / totalTasks) * 100) : 100;
+      textToShare = `Informe de Seguridad Infantil en mi hogar: Contamos con un ${pct}% de seguridad (${completedTasks} de ${totalTasks} medidas completadas). ¡La prevención de accidentes salva vidas!`;
+    }
+
+    // Clean up Markdown formatting for plain text sharing
+    const cleanText = textToShare
+      .replace(/[*#`_-]/g, '')
+      .replace(/\n+/g, '\n')
+      .trim();
+
+    const shareUrl = window.location.href;
+    const shareTitle = 'Amapola Alerta - Resumen de Seguridad Infantil';
+    const fullShareText = `${cleanText}\n\nRevisa nuestro checklist interactivo aquí:`;
+
+    if (navigator.share) {
+      try {
+        await navigator.share({
+          title: shareTitle,
+          text: fullShareText,
+          url: shareUrl,
+        });
+        logAnalyticsEvent('share_summary_report_api', { hasSummary: !!summaryReportText });
+        showToast('¡Resumen compartido con éxito!', 'success');
+      } catch (err) {
+        console.log('Error compartiendo:', err);
+      }
+    } else {
+      try {
+        await navigator.clipboard.writeText(`${fullShareText}\n${shareUrl}`);
+        showToast('Resumen copiado al portapapeles. ¡Compártelo con tu familia!', 'success');
+        logAnalyticsEvent('share_summary_report_clipboard', { hasSummary: !!summaryReportText });
+      } catch (err) {
+        console.log('Error copiando al portapapeles:', err);
+        showToast('No se pudo copiar el texto.', 'error');
+      }
+    }
+  };
+
+  const handleSnapshotSafety = () => {
+    const newPrev: Record<string, number> = {};
+    preventionTopics.forEach(topic => {
+      const total = topic.hazards.length;
+      const completed = topic.hazards.filter(h => h.completed).length;
+      newPrev[topic.id] = total > 0 ? Math.round((completed / total) * 100) : 100;
+    });
+    setPreviousAreaSafety(newPrev);
+    showToast('Se ha guardado el estado de seguridad actual como histórico anterior.', 'success');
+    logAnalyticsEvent('snapshot_safety_trends', { count: Object.keys(newPrev).length });
+  };
+
+  const handleResetBaseline = () => {
+    setPreviousAreaSafety({
+      '1': 25,
+      '2': 50,
+      '3': 25
+    });
+    showToast('Se han restaurado los niveles de seguridad anteriores predeterminados.', 'info');
+    logAnalyticsEvent('reset_safety_trends_baseline', {});
   };
 
   const handleDownloadTaskICS = (taskName: string, roomName: string, frequencyMonths: number = 1) => {
@@ -1012,19 +1449,29 @@ export default function App() {
   };
 
   const handleShareProgress = async () => {
+    const shareText = `¡Hola! He alcanzado un ${percentSecured}% de prevención de accidentes en mi hogar según Amapola Alerta. Revisa las medidas de seguridad aquí:`;
+    const shareUrl = window.location.href;
+    
     if (navigator.share) {
       try {
         await navigator.share({
           title: 'Mi progreso en Seguridad Infantil',
-          text: `¡Hola! He alcanzado un ${percentSecured}% de prevención de accidentes en mi hogar según Amapola Alerta.`,
-          url: window.location.href,
+          text: `${shareText} ${shareUrl}`,
+          url: shareUrl,
         });
         logAnalyticsEvent('share_safety_progress', { percentage: percentSecured });
+        showToast('¡Progreso de seguridad compartido con éxito!', 'success');
       } catch (error) {
         console.error('Error sharing:', error);
       }
     } else {
-      alert('Tu navegador no soporta la función de compartir (Web Share API).');
+      try {
+        await navigator.clipboard.writeText(`${shareText} ${shareUrl}`);
+        showToast('Progreso de seguridad copiado al portapapeles', 'success');
+        logAnalyticsEvent('share_safety_progress', { percentage: percentSecured });
+      } catch (err) {
+        showToast('Tu navegador no soporta la función de compartir.', 'error');
+      }
     }
   };
 
@@ -1066,6 +1513,20 @@ export default function App() {
     };
   });
 
+  const matchesCategory = (hazardText: string, category: string): boolean => {
+    const text = hazardText.toLowerCase();
+    if (category === 'Fuego') {
+      return text.includes('olla') || text.includes('sartén') || text.includes('sartenes') || text.includes('estufa') || text.includes('quemadura') || text.includes('caliente') || text.includes('fuego') || text.includes('calor');
+    }
+    if (category === 'Eléctrico') {
+      return text.includes('electrodoméstico') || text.includes('enchufe') || text.includes('tomacorriente') || text.includes('descarga') || text.includes('eléctric');
+    }
+    if (category === 'Caídas') {
+      return text.includes('caída') || text.includes('resbal') || text.includes('golpe') || text.includes('esquina') || text.includes('anclado') || text.includes('mueble') || text.includes('ventana') || text.includes('malla') || text.includes('inodoro') || text.includes('agua') || text.includes('ahogamiento') || text.includes('antideslizante');
+    }
+    return false;
+  };
+
   const filteredPreventionTopics = preventionTopics.map(topic => {
     const query = preventionSearch.toLowerCase();
     
@@ -1082,6 +1543,13 @@ export default function App() {
       currentHazards = topicMatches ? currentHazards : matchingHazards;
     }
 
+    // Filter by selected categories if any are checked
+    if (selectedCategories.length > 0) {
+      currentHazards = currentHazards.filter(h => 
+        selectedCategories.some(cat => matchesCategory(h.text, cat))
+      );
+    }
+
     if (urgencySort) {
       const urgencyWeight: Record<string, number> = { 'Alta': 3, 'Media': 2, 'Baja': 1 };
       currentHazards = [...currentHazards].sort((a, b) => {
@@ -1095,7 +1563,9 @@ export default function App() {
       ...topic,
       hazards: currentHazards
     };
-  }).filter(topic => topic.hazards.length > 0).filter(topic => effortFilter === 'Todos' || topic.effort === effortFilter);
+  }).filter(topic => topic.hazards.length > 0)
+    .filter(topic => effortFilter === 'Todos' || topic.effort === effortFilter)
+    .filter(topic => !onlyHighUrgency || topic.hazards.some(h => h.urgency === 'Alta'));
 
   if (urgencySort) {
     const urgencyWeight: Record<string, number> = { 'Alta': 3, 'Media': 2, 'Baja': 1 };
@@ -1106,8 +1576,15 @@ export default function App() {
     });
   }
 
+  const displayedPreventionTopics = filteredPreventionTopics.filter(topic => {
+    if (!roomSearchQuery) return true;
+    return topic.room.toLowerCase().includes(roomSearchQuery.toLowerCase()) || 
+           topic.title.toLowerCase().includes(roomSearchQuery.toLowerCase());
+  });
+
   return (
-    <div id="app-shell" className="min-h-screen bg-slate-50 flex flex-col justify-between selection:bg-rose-100 selection:text-rose-900">
+    <>
+    <div id="app-shell" className="min-h-screen bg-slate-50 flex flex-col justify-between selection:bg-rose-100 selection:text-rose-900 no-print">
       
       {/* Upper Navigation Bar */}
       <header className="sticky top-0 z-40 bg-white/95 backdrop-blur-sm border-b border-slate-100/80 transition-all">
@@ -1122,61 +1599,82 @@ export default function App() {
             </div>
           </div>
 
-          <div className="flex items-center gap-1 bg-slate-100 p-1 rounded-xl no-print">
+          <div className="flex items-center gap-2 no-print">
+            <div className="flex items-center gap-1 bg-slate-100 p-1 rounded-xl">
+              <button
+                onClick={() => setActiveTab('emergency')}
+                className={`px-4 py-2 rounded-xl text-sm font-bold transition-all cursor-pointer flex items-center gap-2 ${
+                  activeTab === 'emergency'
+                    ? 'bg-rose-600 text-white shadow-md'
+                    : 'text-slate-400 hover:text-white hover:bg-slate-700'
+                }`}
+              >
+                <Heart className="w-3.5 h-3.5 text-rose-500 fill-current" />
+                <span className="hidden sm:inline">Urgencias</span>
+              </button>
+              <button
+                onClick={() => setActiveTab('vaccines')}
+                className={`px-4 py-2 rounded-xl text-sm font-bold transition-all cursor-pointer flex items-center gap-2 ${
+                  activeTab === 'vaccines'
+                    ? 'bg-emerald-600 text-white shadow-md'
+                    : 'text-slate-400 hover:text-white hover:bg-slate-700'
+                }`}
+              >
+                <Calendar className="w-3.5 h-3.5 text-emerald-500" />
+                <span className="hidden sm:inline">Vacunas</span>
+              </button>
+              <button
+                onClick={() => setActiveTab('prevention')}
+                className={`px-4 py-2 rounded-xl text-sm font-bold transition-all cursor-pointer flex items-center gap-2 ${
+                  activeTab === 'prevention'
+                    ? 'bg-blue-600 text-white shadow-md'
+                    : 'text-slate-400 hover:text-white hover:bg-slate-700'
+                }`}
+              >
+                <ShieldCheck className="w-3.5 h-3.5 text-blue-500" />
+                <span className="hidden sm:inline">Prevención</span>
+              </button>
+              <button
+                onClick={() => setActiveTab('wellbeing')}
+                className={`px-4 py-2 rounded-xl text-sm font-bold transition-all cursor-pointer flex items-center gap-2 ${
+                  activeTab === 'wellbeing'
+                    ? 'bg-purple-600 text-white shadow-md'
+                    : 'text-slate-400 hover:text-white hover:bg-slate-700'
+                }`}
+              >
+                <Heart className="w-3.5 h-3.5 text-purple-500" />
+                <span className="hidden md:inline">Mamá</span>
+              </button>
+              <button
+                onClick={() => setActiveTab('tips')}
+                className={`px-4 py-2 rounded-xl text-sm font-bold transition-all cursor-pointer flex items-center gap-2 ${
+                  activeTab === 'tips'
+                    ? 'bg-amber-500 text-white shadow-md'
+                    : 'text-slate-400 hover:text-white hover:bg-slate-700'
+                }`}
+              >
+                <Star className="w-3.5 h-3.5 text-amber-300" />
+                <span className="hidden md:inline">Abuela</span>
+              </button>
+              <button
+                onClick={() => setActiveTab('health')}
+                className={`px-4 py-2 rounded-xl text-sm font-bold transition-all cursor-pointer flex items-center gap-2 ${
+                  activeTab === 'health'
+                    ? 'bg-teal-600 text-white shadow-md'
+                    : 'text-slate-400 hover:text-white hover:bg-slate-700'
+                }`}
+              >
+                <Stethoscope className="w-3.5 h-3.5 text-teal-400" />
+                <span className="hidden md:inline">Salud</span>
+              </button>
+            </div>
+
             <button
-              onClick={() => setActiveTab('emergency')}
-              className={`px-4 py-2 rounded-xl text-sm font-bold transition-all cursor-pointer flex items-center gap-2 ${
-                activeTab === 'emergency'
-                  ? 'bg-rose-600 text-white shadow-md'
-                  : 'text-slate-400 hover:text-white hover:bg-slate-700'
-              }`}
+              onClick={() => setIsSettingsOpen(true)}
+              className="p-2.5 rounded-xl text-slate-500 hover:text-slate-900 hover:bg-slate-200 transition-all cursor-pointer flex items-center justify-center border border-slate-200 bg-white shadow-sm gap-1.5"
+              title="Configuración y Accesibilidad"
             >
-              <Heart className="w-3.5 h-3.5 text-rose-500 fill-current" />
-              <span className="hidden sm:inline">Urgencias</span>
-            </button>
-            <button
-              onClick={() => setActiveTab('vaccines')}
-              className={`px-4 py-2 rounded-xl text-sm font-bold transition-all cursor-pointer flex items-center gap-2 ${
-                activeTab === 'vaccines'
-                  ? 'bg-emerald-600 text-white shadow-md'
-                  : 'text-slate-400 hover:text-white hover:bg-slate-700'
-              }`}
-            >
-              <Calendar className="w-3.5 h-3.5 text-emerald-500" />
-              <span className="hidden sm:inline">Vacunas</span>
-            </button>
-            <button
-              onClick={() => setActiveTab('prevention')}
-              className={`px-4 py-2 rounded-xl text-sm font-bold transition-all cursor-pointer flex items-center gap-2 ${
-                activeTab === 'prevention'
-                  ? 'bg-blue-600 text-white shadow-md'
-                  : 'text-slate-400 hover:text-white hover:bg-slate-700'
-              }`}
-            >
-              <ShieldCheck className="w-3.5 h-3.5 text-blue-500" />
-              <span className="hidden sm:inline">Prevención</span>
-            </button>
-            <button
-              onClick={() => setActiveTab('wellbeing')}
-              className={`px-4 py-2 rounded-xl text-sm font-bold transition-all cursor-pointer flex items-center gap-2 ${
-                activeTab === 'wellbeing'
-                  ? 'bg-purple-600 text-white shadow-md'
-                  : 'text-slate-400 hover:text-white hover:bg-slate-700'
-              }`}
-            >
-              <Heart className="w-3.5 h-3.5 text-purple-500" />
-              <span className="hidden md:inline">Mamá</span>
-            </button>
-            <button
-              onClick={() => setActiveTab('tips')}
-              className={`px-4 py-2 rounded-xl text-sm font-bold transition-all cursor-pointer flex items-center gap-2 ${
-                activeTab === 'tips'
-                  ? 'bg-amber-500 text-white shadow-md'
-                  : 'text-slate-400 hover:text-white hover:bg-slate-700'
-              }`}
-            >
-              <Star className="w-3.5 h-3.5 text-amber-300" />
-              <span className="hidden md:inline">Abuela</span>
+              <Settings className="w-4 h-4 text-slate-600" />
             </button>
           </div>
         </div>
@@ -1241,6 +1739,15 @@ export default function App() {
                       >
                         {notificationsEnabled ? <Bell className="w-3.5 h-3.5 fill-emerald-400 text-emerald-400" /> : <BellOff className="w-3.5 h-3.5" />}
                         {notificationsEnabled ? 'Avisos Activos' : 'Activar Recordatorio Semanal'}
+                      </button>
+
+                      <button
+                        onClick={() => window.print()}
+                        className="inline-flex items-center gap-1.5 px-3.5 py-1 text-xs font-black uppercase tracking-widest rounded-full border bg-white text-blue-600 border-white hover:bg-blue-50 transition-all cursor-pointer shadow-sm"
+                        title="Imprimir Lista de Seguridad"
+                      >
+                        <Printer className="w-3.5 h-3.5" />
+                        Imprimir Lista de Seguridad
                       </button>
                     </div>
                     <div className="space-y-1.5">
@@ -1310,15 +1817,119 @@ export default function App() {
               </div>
 
               {/* Tip de la semana */}
-              <div className="bg-amber-50 border border-amber-200/60 rounded-3xl p-6 md:p-8 shadow-sm flex items-start gap-4 text-left">
-                <div className="shrink-0 w-12 h-12 bg-amber-100 rounded-full flex items-center justify-center text-amber-500 shadow-inner">
-                  <Lightbulb className="w-6 h-6 fill-amber-500/20" />
+              <div className="bg-amber-50 border border-amber-200/60 rounded-3xl p-6 md:p-8 shadow-sm flex flex-col md:flex-row items-start md:items-center justify-between gap-4 text-left relative overflow-visible">
+                <div className="flex items-start gap-4 flex-1">
+                  <div className="shrink-0 w-12 h-12 bg-amber-100 rounded-full flex items-center justify-center text-amber-500 shadow-inner">
+                    <Lightbulb className="w-6 h-6 fill-amber-500/20" />
+                  </div>
+                  <div className="space-y-1.5 flex-1">
+                    <div className="flex items-center gap-2">
+                      <span className="text-xs font-black uppercase tracking-widest text-amber-600">Tip de la Semana</span>
+                      <span className="text-[9px] font-black uppercase tracking-wider text-amber-700 bg-amber-200/50 px-2 py-0.5 rounded-full">
+                        Prevención Mensual
+                      </span>
+                    </div>
+                    <p className="text-sm font-semibold text-slate-800 leading-relaxed max-w-xl">
+                      {weeklyTip}
+                    </p>
+                  </div>
                 </div>
-                <div className="space-y-1.5 flex-1">
-                  <span className="text-xs font-black uppercase tracking-widest text-amber-600">Tip de la Semana</span>
-                  <p className="text-sm font-semibold text-slate-800 leading-relaxed">
-                    {weeklyTip}
-                  </p>
+
+                {/* Calendar Button & Dropdown Option */}
+                <div className="relative shrink-0 w-full md:w-auto mt-2 md:mt-0">
+                  <button
+                    onClick={() => {
+                      setShowTipCalendarDropdown(!showTipCalendarDropdown);
+                      logAnalyticsEvent('click_tip_calendar_dropdown', { tip: weeklyTip.substring(0, 30) });
+                    }}
+                    className="w-full md:w-auto px-4 py-2.5 bg-amber-600 hover:bg-amber-700 text-white text-xs font-extrabold uppercase tracking-wider rounded-xl transition-all shadow-sm shadow-amber-600/15 cursor-pointer flex items-center justify-center gap-2"
+                  >
+                    <Calendar className="w-4 h-4" />
+                    <span>Añadir Recordatorio</span>
+                    <ChevronDown className={`w-3.5 h-3.5 transition-transform duration-200 ${showTipCalendarDropdown ? 'rotate-180' : ''}`} />
+                  </button>
+
+                  <AnimatePresence>
+                    {showTipCalendarDropdown && (
+                      <>
+                        {/* Overlay transparent to close on outside click */}
+                        <div 
+                          className="fixed inset-0 z-40" 
+                          onClick={() => setShowTipCalendarDropdown(false)} 
+                        />
+                        <motion.div
+                          initial={{ opacity: 0, y: 10, scale: 0.95 }}
+                          animate={{ opacity: 1, y: 0, scale: 1 }}
+                          exit={{ opacity: 0, y: 10, scale: 0.95 }}
+                          className="absolute right-0 top-full mt-2 z-50 w-64 bg-white rounded-2xl p-2.5 shadow-xl border border-slate-200 text-left space-y-1"
+                        >
+                          <div className="px-2.5 py-1.5 border-b border-slate-50 mb-1">
+                            <span className="text-[10px] font-black uppercase tracking-widest text-slate-400 block">Guardar Recordatorio Mensual</span>
+                            <span className="text-[9px] font-bold text-slate-500 block leading-tight mt-0.5">Se creará un evento que se repite cada mes.</span>
+                          </div>
+                          
+                          <a
+                            href={getGoogleCalendarLink({
+                              title: `Recordatorio Amapola Alerta: Prevención Infantil`,
+                              description: `Consejo de Prevención de Amapola Alerta:\n\n${weeklyTip}\n\nEste recordatorio se repite mensualmente para mantener el hogar seguro para tu bebé.`
+                            })}
+                            target="_blank"
+                            rel="noopener noreferrer"
+                            onClick={() => {
+                              setShowTipCalendarDropdown(false);
+                              logAnalyticsEvent('add_tip_google_calendar', { tip: weeklyTip.substring(0, 30) });
+                            }}
+                            className="flex items-center gap-2 px-2.5 py-2 hover:bg-slate-50 rounded-xl text-xs font-bold text-slate-700 hover:text-slate-900 transition-colors cursor-pointer"
+                          >
+                            <span className="text-base shrink-0">📅</span>
+                            <div className="flex-1 min-w-0">
+                              <span className="block truncate">Google Calendar</span>
+                              <span className="block text-[9px] text-slate-400 font-medium">Abrir en tu cuenta de Google</span>
+                            </div>
+                          </a>
+
+                          <a
+                            href={getOutlookCalendarLink({
+                              title: `Recordatorio Amapola Alerta: Prevención Infantil`,
+                              description: `Consejo de Prevención de Amapola Alerta:\n\n${weeklyTip}\n\nEste recordatorio se repite mensualmente para mantener el hogar seguro para tu bebé.`
+                            })}
+                            target="_blank"
+                            rel="noopener noreferrer"
+                            onClick={() => {
+                              setShowTipCalendarDropdown(false);
+                              logAnalyticsEvent('add_tip_outlook_calendar', { tip: weeklyTip.substring(0, 30) });
+                            }}
+                            className="flex items-center gap-2 px-2.5 py-2 hover:bg-slate-50 rounded-xl text-xs font-bold text-slate-700 hover:text-slate-900 transition-colors cursor-pointer"
+                          >
+                            <span className="text-base shrink-0">📧</span>
+                            <div className="flex-1 min-w-0">
+                              <span className="block truncate">Outlook / Live</span>
+                              <span className="block text-[9px] text-slate-400 font-medium">Abrir en Outlook Web</span>
+                            </div>
+                          </a>
+
+                          <button
+                            type="button"
+                            onClick={() => {
+                              downloadICSFile({
+                                title: `Recordatorio Amapola Alerta: Prevención Infantil`,
+                                description: `Consejo de Prevención de Amapola Alerta:\n\n${weeklyTip}\n\nEste recordatorio se repite mensualmente para mantener el hogar seguro para tu bebé.`
+                              });
+                              setShowTipCalendarDropdown(false);
+                              logAnalyticsEvent('add_tip_ics_file', { tip: weeklyTip.substring(0, 30) });
+                            }}
+                            className="w-full flex items-center gap-2 px-2.5 py-2 hover:bg-rose-50 hover:text-rose-900 rounded-xl text-xs font-bold text-slate-700 transition-colors text-left cursor-pointer"
+                          >
+                            <span className="text-base shrink-0">📥</span>
+                            <div className="flex-1 min-w-0">
+                              <span className="block truncate">Descargar archivo iCal</span>
+                              <span className="block text-[9px] text-slate-400 font-medium">Para Apple Calendar / Otros</span>
+                            </div>
+                          </button>
+                        </motion.div>
+                      </>
+                    )}
+                  </AnimatePresence>
                 </div>
               </div>
 
@@ -1350,6 +1961,9 @@ export default function App() {
                   </button>
                 </div>
               )}
+
+              {/* Racha de Prevención */}
+              <PreventionStreak />
 
               {/* Logros y Recompensas */}
               <div className="bg-white border-0 shadow-[0_8px_30px_rgb(0,0,0,0.04)] rounded-3xl p-6 md:p-8 shadow-sm flex flex-col gap-4 text-left">
@@ -1396,39 +2010,33 @@ export default function App() {
                 </div>
               </div>
 
+              {/* Gráfico de los 5 riesgos más urgentes */}
+              <UrgentRisksChart 
+                preventionTopics={preventionTopics} 
+                toggleHazard={toggleHazard} 
+                handleDownloadTaskICS={handleDownloadTaskICS}
+              />
+
+              {/* Voice Search Assistant */}
+              <div className="mb-6">
+                <VoiceSearchAssistant
+                  preventionSearch={preventionSearch}
+                  setPreventionSearch={setPreventionSearch}
+                  viewMode={viewMode as any}
+                  setViewMode={setViewMode as any}
+                  statusFilter={statusFilter as any}
+                  setStatusFilter={setStatusFilter as any}
+                  urgencySort={urgencySort}
+                  setUrgencySort={setUrgencySort}
+                  effortFilter={effortFilter}
+                  setEffortFilter={setEffortFilter}
+                />
+              </div>
+
               {/* Filters */}
-              <div className="flex flex-col md:flex-row gap-4 items-center mb-6">
-                {/* Search Bar */}
-                <div className="relative w-full max-w-md md:mb-0">
-                  <div className="absolute inset-y-0 left-0 pl-3.5 flex items-center pointer-events-none">
-                    <Search className="h-4 w-4 text-slate-400" />
-                  </div>
-                  <input
-                    ref={searchInputRef}
-                    type="text"
-                    placeholder="Buscar área o peligro (ej. cocina, enchufe...)"
-                    className="w-full pl-10 pr-12 py-3 bg-white border border-slate-200 rounded-2xl text-sm focus:outline-none focus:ring-2 focus:ring-blue-500/50 focus:border-blue-500 transition-all shadow-sm"
-                    value={preventionSearch}
-                    onChange={(e) => setPreventionSearch(e.target.value)}
-                  />
-                  <button
-                    onClick={startVoiceSearch}
-                    className={`absolute inset-y-0 right-0 pr-3.5 flex items-center transition-colors focus:outline-none ${isListening ? 'text-blue-500' : 'text-slate-400 hover:text-slate-600'}`}
-                    title="Búsqueda por voz"
-                  >
-                    {isListening ? (
-                      <span className="relative flex h-4 w-4">
-                        <span className="animate-ping absolute inline-flex h-full w-full rounded-full bg-blue-400 opacity-75"></span>
-                        <Mic className="relative inline-flex rounded-full h-4 w-4" />
-                      </span>
-                    ) : (
-                      <Mic className="h-4 w-4" />
-                    )}
-                  </button>
-                </div>
-                
+              <div className="flex flex-col md:flex-row gap-4 items-center justify-end mb-6">
                 {/* Effort and Status Filters, and Night Mode */}
-                <div className="flex flex-wrap items-center gap-4 w-full md:w-auto">
+                <div className="flex flex-wrap items-center gap-4 w-full md:w-auto justify-end">
                   <div className="flex bg-slate-200/50 p-1.5 rounded-2xl w-full md:w-auto overflow-x-auto">
                     {['Checklists', 'Vista Anual'].map((view) => (
                       <button
@@ -1604,7 +2212,477 @@ export default function App() {
                       </div>
                     </div>
                   ) : (
-                    filteredPreventionTopics.map((topic) => {
+                    <>
+                      {/* Agendar Inspección General Banner */}
+                      <div className={`col-span-1 md:col-span-3 border rounded-3xl p-6 text-left flex flex-col md:flex-row md:items-center justify-between gap-6 transition-all shadow-[0_8px_30px_rgb(0,0,0,0.03)] ${
+                        isNightMode 
+                          ? 'bg-slate-900 border-slate-800 text-white' 
+                          : isAccessibilityMode 
+                            ? 'bg-white border-[3px] border-black text-slate-800' 
+                            : 'bg-white border border-slate-100 text-slate-800'
+                      }`}>
+                        <div className="space-y-1">
+                          <span className="text-[10px] font-black uppercase tracking-widest text-teal-600 flex items-center gap-1.5">
+                            <Calendar className="w-4 h-4 text-teal-500" /> Planificación de Seguridad
+                          </span>
+                          <h4 className={`text-base font-black ${isNightMode ? 'text-white' : 'text-slate-800'}`}>
+                            Inspección General del Hogar
+                          </h4>
+                          <p className={`text-xs ${isNightMode ? 'text-slate-400' : 'text-slate-500'} leading-relaxed font-medium`}>
+                            Programa un recordatorio único para realizar el checklist completo de seguridad infantil de todas las áreas de tu hogar.
+                          </p>
+                        </div>
+
+                        <div className="flex flex-col sm:flex-row gap-3 shrink-0">
+                          <button
+                            type="button"
+                            onClick={() => setShowGeneralInspectionModal(true)}
+                            className="px-5 py-3 bg-indigo-600 hover:bg-indigo-700 active:scale-[0.98] text-white rounded-2xl text-xs font-black uppercase tracking-wider transition-all flex items-center justify-center gap-2 shadow-lg shadow-indigo-600/20 cursor-pointer shrink-0"
+                          >
+                            <Calendar className="w-4 h-4" />
+                            <span>Agendar Inspección General</span>
+                          </button>
+
+                          <button
+                            type="button"
+                            onClick={handleShareGeneralInspection}
+                            className={`px-5 py-3 border active:scale-[0.98] rounded-2xl text-xs font-black uppercase tracking-wider transition-all flex items-center justify-center gap-2 cursor-pointer ${
+                              isNightMode
+                                ? 'bg-slate-800 border-slate-700 hover:bg-slate-700 text-slate-200 hover:text-white'
+                                : 'bg-slate-50 border-slate-200 hover:bg-slate-100 text-slate-700 hover:text-slate-900'
+                            }`}
+                          >
+                            <Share2 className="w-4 h-4" />
+                            <span>Compartir Inspección</span>
+                          </button>
+
+                          <button
+                            type="button"
+                            onClick={handleExportChecklist}
+                            className={`px-5 py-3 border active:scale-[0.98] rounded-2xl text-xs font-black uppercase tracking-wider transition-all flex items-center justify-center gap-2 cursor-pointer ${
+                              isNightMode
+                                ? 'bg-slate-800 border-slate-700 hover:bg-slate-700 text-slate-200 hover:text-white'
+                                : 'bg-slate-50 border-slate-200 hover:bg-slate-100 text-slate-700 hover:text-slate-900'
+                            }`}
+                            title="Exportar checklist actual como archivo JSON"
+                          >
+                            <Download className="w-4 h-4 text-emerald-500" />
+                            <span>Exportar checklist</span>
+                          </button>
+
+                          <button
+                            id="generate-summary-report-btn"
+                            type="button"
+                            onClick={handleGenerateSummaryReport}
+                            className="px-5 py-3 bg-teal-600 hover:bg-teal-700 active:scale-[0.98] text-white rounded-2xl text-xs font-black uppercase tracking-wider transition-all flex items-center justify-center gap-2 shadow-lg shadow-teal-600/20 cursor-pointer shrink-0"
+                            title="Generar resumen ejecutivo de vulnerabilidades críticas con IA"
+                          >
+                            <Sparkles className="w-4 h-4 text-white animate-pulse" />
+                            <span>Generar Resumen</span>
+                          </button>
+
+                          <button
+                            id="share-summary-report-btn"
+                            type="button"
+                            onClick={handleShareSummaryReport}
+                            className={`px-5 py-3 border active:scale-[0.98] rounded-2xl text-xs font-black uppercase tracking-wider transition-all flex items-center justify-center gap-2 cursor-pointer ${
+                              isNightMode
+                                ? 'bg-slate-800 border-slate-700 hover:bg-slate-700 text-slate-200 hover:text-white'
+                                : 'bg-slate-50 border-slate-200 hover:bg-slate-100 text-slate-700 hover:text-slate-900'
+                            }`}
+                            title="Compartir el resumen de vulnerabilidades generado por la IA"
+                          >
+                            <Share2 className="w-4 h-4 text-teal-500" />
+                            <span>Compartir Resumen</span>
+                          </button>
+                        </div>
+                      </div>
+
+                      {/* Búsqueda de Habitaciones y Categorías */}
+                      <div className={`col-span-1 md:col-span-3 border rounded-3xl p-5 flex flex-col gap-4 transition-all shadow-[0_8px_30px_rgb(0,0,0,0.02)] ${
+                        isNightMode 
+                          ? 'bg-slate-900 border-slate-800 text-white' 
+                          : isAccessibilityMode 
+                            ? 'bg-white border-[3px] border-black text-slate-800' 
+                            : 'bg-white border border-slate-100 text-slate-800'
+                      }`}>
+                        <div className="flex flex-col lg:flex-row lg:items-center justify-between gap-4">
+                          <div className="flex flex-col sm:flex-row items-stretch sm:items-center gap-4 flex-1">
+                            {/* Input de búsqueda */}
+                            <div className="flex items-center gap-3 flex-1 md:max-w-md">
+                              <div className={`p-2 rounded-xl ${isNightMode ? 'bg-slate-800 text-indigo-400' : 'bg-indigo-50 text-indigo-600'}`}>
+                                <Search className="w-5 h-5" />
+                              </div>
+                              <div className="flex-1 text-left">
+                                <label className={`block text-[10px] font-extrabold uppercase tracking-wider flex items-center justify-between gap-2 ${isNightMode ? 'text-slate-400' : 'text-slate-500'}`}>
+                                  <span>Filtrar por Habitación</span>
+                                  <kbd className={`hidden sm:inline-block px-1.5 py-0.5 text-[8px] font-mono font-bold rounded border uppercase ${
+                                    isNightMode 
+                                      ? 'bg-slate-800 border-slate-700 text-slate-400' 
+                                      : 'bg-slate-100 border-slate-200 text-slate-500'
+                                  }`}>
+                                    Ctrl+Shift+P
+                                  </kbd>
+                                </label>
+                                <input
+                                  ref={roomSearchInputRef}
+                                  type="text"
+                                  placeholder="Buscar por nombre (ej. Cocina, Baño...)"
+                                  value={roomSearchQuery}
+                                  onChange={(e) => setRoomSearchQuery(e.target.value)}
+                                  className={`w-full bg-transparent border-none p-0 focus:ring-0 focus:outline-none text-sm font-bold placeholder-slate-400 ${
+                                    isNightMode ? 'text-white' : 'text-slate-800'
+                                  }`}
+                                />
+                              </div>
+                              {roomSearchQuery && (
+                                <button 
+                                  type="button"
+                                  onClick={() => setRoomSearchQuery('')}
+                                  className={`p-1.5 rounded-full transition-colors ${isNightMode ? 'text-slate-400 hover:bg-slate-800 hover:text-white' : 'text-slate-400 hover:bg-slate-100 hover:text-slate-600'}`}
+                                >
+                                  <X className="w-4 h-4" />
+                                </button>
+                              )}
+                            </div>
+
+                            {/* Botón Resetear Filtros */}
+                            <button
+                              type="button"
+                              onClick={() => {
+                                setRoomSearchQuery('');
+                                setPreventionSearch('');
+                                setSelectedCategories([]);
+                                setUrgencySort(false);
+                                setOnlyHighUrgency(false);
+                              }}
+                              className={`px-4 py-2.5 rounded-xl border text-xs font-bold transition-all flex items-center justify-center gap-2 cursor-pointer w-full sm:w-auto ${
+                                isNightMode
+                                  ? 'bg-slate-800 border-slate-700 hover:bg-slate-700 text-slate-300 hover:text-white'
+                                  : 'bg-slate-50 border-slate-200 hover:bg-slate-100 text-slate-600 hover:text-slate-900'
+                              }`}
+                              title="Restaurar todos los filtros y ordenamiento"
+                            >
+                              <RotateCcw className="w-4 h-4 text-slate-500" />
+                              <span>Resetear Filtros</span>
+                            </button>
+
+                            {/* Botón de filtrar por categoría */}
+                            <div className="relative">
+                              <button
+                                type="button"
+                                onClick={() => setIsCategoryMenuOpen(!isCategoryMenuOpen)}
+                                className={`px-4 py-2.5 rounded-xl border text-xs font-bold transition-all flex items-center justify-center gap-2 cursor-pointer w-full sm:w-auto ${
+                                  selectedCategories.length > 0
+                                    ? 'bg-indigo-600 border-indigo-600 text-white shadow-md shadow-indigo-600/15'
+                                    : isNightMode
+                                      ? 'bg-slate-800 border-slate-700 hover:bg-slate-700 text-slate-200 hover:text-white'
+                                      : 'bg-slate-50 border-slate-200 hover:bg-slate-100 text-slate-700 hover:text-slate-900'
+                                }`}
+                              >
+                                <Filter className="w-4 h-4" />
+                                <span>Filtrar por Categoría</span>
+                                {selectedCategories.length > 0 && (
+                                  <span className="bg-white text-indigo-600 rounded-full w-4 h-4 flex items-center justify-center text-[10px] font-black">
+                                    {selectedCategories.length}
+                                  </span>
+                                )}
+                                <ChevronDown className={`w-3.5 h-3.5 transition-transform ${isCategoryMenuOpen ? 'rotate-180' : ''}`} />
+                              </button>
+
+                              {/* Dropdown / Submenú con checkboxes */}
+                              <AnimatePresence>
+                                {isCategoryMenuOpen && (
+                                  <>
+                                    {/* Backdrop for closing */}
+                                    <div className="fixed inset-0 z-40" onClick={() => setIsCategoryMenuOpen(false)} />
+                                    <motion.div
+                                      initial={{ opacity: 0, y: 10 }}
+                                      animate={{ opacity: 1, y: 0 }}
+                                      exit={{ opacity: 0, y: 10 }}
+                                      className={`absolute left-0 sm:left-auto sm:right-0 mt-2 w-56 rounded-2xl p-4 shadow-xl border z-50 text-left ${
+                                        isNightMode
+                                          ? 'bg-slate-800 border-slate-700 text-white'
+                                          : 'bg-white border-slate-100 text-slate-800 shadow-slate-200/50'
+                                      }`}
+                                    >
+                                      <span className={`block text-[9px] font-black uppercase tracking-widest mb-3 ${isNightMode ? 'text-slate-400' : 'text-slate-500'}`}>
+                                        Seleccionar Riesgos
+                                      </span>
+                                      
+                                      <div className="space-y-3">
+                                        {[
+                                          { id: 'Fuego', label: 'Calor / Fuego', color: 'text-orange-500 dark:text-orange-400' },
+                                          { id: 'Eléctrico', label: 'Riesgo Eléctrico', color: 'text-amber-500 dark:text-amber-400' },
+                                          { id: 'Caídas', label: 'Golpes / Caídas', color: 'text-indigo-500 dark:text-indigo-400' }
+                                        ].map(cat => {
+                                          const isChecked = selectedCategories.includes(cat.id);
+                                          return (
+                                            <label 
+                                              key={cat.id} 
+                                              className="flex items-center gap-3 cursor-pointer group select-none"
+                                            >
+                                              <input
+                                                type="checkbox"
+                                                checked={isChecked}
+                                                onChange={() => {
+                                                  if (isChecked) {
+                                                    setSelectedCategories(selectedCategories.filter(c => c !== cat.id));
+                                                  } else {
+                                                    setSelectedCategories([...selectedCategories, cat.id]);
+                                                  }
+                                                }}
+                                                className="rounded text-indigo-600 focus:ring-indigo-500 w-4 h-4 cursor-pointer"
+                                              />
+                                              <span className={`text-xs font-bold transition-colors ${cat.color} ${
+                                                isChecked ? 'opacity-100' : 'opacity-80 group-hover:opacity-100'
+                                              }`}>
+                                                {cat.label}
+                                              </span>
+                                            </label>
+                                          );
+                                        })}
+                                      </div>
+
+                                      {selectedCategories.length > 0 && (
+                                        <div className="mt-4 pt-3 border-t border-slate-100 dark:border-slate-700/50 flex justify-between">
+                                          <button
+                                            type="button"
+                                            onClick={() => setSelectedCategories([])}
+                                            className="text-[10px] font-black uppercase text-rose-500 hover:text-rose-600 cursor-pointer"
+                                          >
+                                            Limpiar
+                                          </button>
+                                          <button
+                                            type="button"
+                                            onClick={() => setIsCategoryMenuOpen(false)}
+                                            className="text-[10px] font-black uppercase text-indigo-500 hover:text-indigo-600 cursor-pointer"
+                                          >
+                                            Aplicar
+                                          </button>
+                                        </div>
+                                      )}
+                                    </motion.div>
+                                  </>
+                                )}
+                              </AnimatePresence>
+                            </div>
+
+                            {/* Botón 'Mostrar solo alta urgencia' */}
+                            <button
+                              type="button"
+                              id="btn-only-high-urgency"
+                              onClick={() => {
+                                setOnlyHighUrgency(!onlyHighUrgency);
+                                logAnalyticsEvent('filter_only_high_urgency', { active: !onlyHighUrgency });
+                              }}
+                              className={`px-4 py-2.5 rounded-xl border text-xs font-bold transition-all flex items-center justify-center gap-2 cursor-pointer w-full sm:w-auto ${
+                                onlyHighUrgency
+                                  ? 'bg-rose-600 border-rose-600 text-white shadow-md shadow-rose-600/15 hover:bg-rose-700 hover:border-rose-700'
+                                  : isNightMode
+                                    ? 'bg-slate-800 border-slate-700 hover:bg-slate-700 text-slate-200 hover:text-white'
+                                    : 'bg-slate-50 border-slate-200 hover:bg-slate-100 text-slate-700 hover:text-slate-900'
+                              }`}
+                              title="Mostrar solo habitaciones con peligros de urgencia Alta"
+                            >
+                              <AlertTriangle className={`w-4 h-4 ${onlyHighUrgency ? 'text-white' : 'text-rose-500'}`} />
+                              <span>Mostrar solo alta urgencia</span>
+                            </button>
+                          </div>
+
+                          <div className={`text-xs font-semibold ${isNightMode ? 'text-slate-400' : 'text-slate-500'} text-left lg:text-right`}>
+                            Mostrando <span className="font-bold text-indigo-600 dark:text-indigo-400">{displayedPreventionTopics.length}</span> de <span className="font-bold">{filteredPreventionTopics.length}</span> habitaciones
+                          </div>
+                        </div>
+
+                        {/* Badges de categorías seleccionadas activas para fácil limpieza */}
+                        {selectedCategories.length > 0 && (
+                          <div className="flex flex-wrap gap-2 pt-3 border-t border-slate-100 dark:border-slate-800/50">
+                            {selectedCategories.map(catId => {
+                              const label = catId === 'Fuego' ? 'Calor / Fuego' : catId === 'Eléctrico' ? 'Riesgo Eléctrico' : 'Golpes / Caídas';
+                              return (
+                                <span 
+                                  key={catId} 
+                                  className="inline-flex items-center gap-1.5 px-2.5 py-1 rounded-lg text-[10px] font-extrabold bg-indigo-50 text-indigo-600 dark:bg-indigo-950/40 dark:text-indigo-400 border border-indigo-100 dark:border-indigo-900/30"
+                                >
+                                  {label}
+                                  <button 
+                                    type="button"
+                                    onClick={() => setSelectedCategories(selectedCategories.filter(c => c !== catId))}
+                                    className="hover:bg-indigo-100 dark:hover:bg-indigo-900/50 rounded p-0.5 transition-colors cursor-pointer"
+                                  >
+                                    <X className="w-3 h-3" />
+                                  </button>
+                                </span>
+                              );
+                            })}
+                            <button
+                              type="button"
+                              onClick={() => setSelectedCategories([])}
+                              className="text-[10px] font-black uppercase text-slate-400 hover:text-slate-600 dark:hover:text-slate-200 self-center cursor-pointer ml-1"
+                            >
+                              Limpiar Todo
+                            </button>
+                          </div>
+                        )}
+                      </div>
+
+                      {/* Comparative Safety Trends Widget */}
+                      <div id="comparative-safety-trends-widget" className={`col-span-1 md:col-span-3 border rounded-3xl p-6 text-left flex flex-col transition-all shadow-[0_8px_30px_rgb(0,0,0,0.03)] ${
+                        isNightMode 
+                          ? 'bg-slate-900 border-slate-800 text-white' 
+                          : isAccessibilityMode 
+                            ? 'bg-white border-[3px] border-black text-slate-800' 
+                            : 'bg-white border border-slate-100 text-slate-800'
+                      }`}>
+                        <div className="flex items-center justify-between border-b pb-4 mb-4 border-slate-100 dark:border-slate-800">
+                          <div className="flex items-center gap-3">
+                            <div className="p-2.5 bg-emerald-100 dark:bg-emerald-950/40 rounded-2xl">
+                              <TrendingUp className="w-5 h-5 text-emerald-600 dark:text-emerald-400" />
+                            </div>
+                            <div>
+                              <h4 className={`text-base font-black ${isNightMode ? 'text-white' : 'text-slate-800'}`}>
+                                Tendencias de Seguridad por Habitación
+                              </h4>
+                              <p className={`text-xs ${isNightMode ? 'text-slate-400' : 'text-slate-500'} leading-relaxed font-medium`}>
+                                Comparativa del estado de protección infantil actual contra el histórico anterior.
+                              </p>
+                            </div>
+                          </div>
+
+                          <div className="flex items-center gap-2">
+                            <button
+                              id="toggle-trends-widget-btn"
+                              type="button"
+                              onClick={() => setShowTrendsWidget(!showTrendsWidget)}
+                              className={`px-3 py-1.5 rounded-xl text-xs font-bold transition-all cursor-pointer ${
+                                isNightMode 
+                                  ? 'bg-slate-800 hover:bg-slate-700 text-slate-300' 
+                                  : 'bg-slate-100 hover:bg-slate-200 text-slate-600'
+                              }`}
+                            >
+                              {showTrendsWidget ? 'Contraer' : 'Expandir'}
+                            </button>
+                          </div>
+                        </div>
+
+                        {showTrendsWidget && (
+                          <div className="grid grid-cols-1 lg:grid-cols-3 gap-6 items-center">
+                            {/* Recharts Bar Chart */}
+                            <div className="lg:col-span-2 h-[260px] w-full min-w-0">
+                              <ResponsiveContainer width="100%" height="100%">
+                                <BarChart
+                                  data={preventionTopics.map(topic => {
+                                    const total = topic.hazards.length;
+                                    const completed = topic.hazards.filter(h => h.completed).length;
+                                    const currentPct = total > 0 ? Math.round((completed / total) * 100) : 100;
+                                    const prevPct = previousAreaSafety[topic.id] !== undefined ? previousAreaSafety[topic.id] : 0;
+                                    return {
+                                      room: topic.room,
+                                      'Actual (%)': currentPct,
+                                      'Anterior (%)': prevPct,
+                                    };
+                                  })}
+                                  margin={{ top: 10, right: 10, left: -25, bottom: 5 }}
+                                >
+                                  <CartesianGrid strokeDasharray="3 3" stroke={isNightMode ? '#334155' : '#F1F5F9'} vertical={false} />
+                                  <XAxis dataKey="room" stroke="#94A3B8" fontSize={11} fontWeight="bold" tickLine={false} />
+                                  <YAxis stroke="#94A3B8" fontSize={10} fontWeight="bold" domain={[0, 100]} tickLine={false} axisLine={false} />
+                                  <Tooltip 
+                                    contentStyle={{ 
+                                      backgroundColor: isNightMode ? '#1E293B' : '#FFFFFF', 
+                                      border: isNightMode ? '1px solid #334155' : '1px solid #E2E8F0', 
+                                      borderRadius: '16px', 
+                                      color: isNightMode ? '#FFF' : '#1E293B', 
+                                      fontSize: '11px', 
+                                      fontWeight: 'bold',
+                                      boxShadow: '0 10px 15px -3px rgba(0, 0, 0, 0.05)'
+                                    }}
+                                  />
+                                  <Bar dataKey="Anterior (%)" fill="#94A3B8" radius={[4, 4, 0, 0]} maxBarSize={40} />
+                                  <Bar dataKey="Actual (%)" fill="#10B981" radius={[4, 4, 0, 0]} maxBarSize={40} />
+                                </BarChart>
+                              </ResponsiveContainer>
+                            </div>
+
+                            {/* Comparative Trend Summary & Interactive Actions */}
+                            <div className="flex flex-col justify-between h-full space-y-4">
+                              <div className="space-y-3">
+                                <h5 className={`text-xs font-extrabold uppercase tracking-widest ${isNightMode ? 'text-slate-400' : 'text-slate-500'}`}>
+                                  Evolución por Área
+                                </h5>
+                                <div className="space-y-2">
+                                  {preventionTopics.map(topic => {
+                                    const total = topic.hazards.length;
+                                    const completed = topic.hazards.filter(h => h.completed).length;
+                                    const currentPct = total > 0 ? Math.round((completed / total) * 100) : 100;
+                                    const prevPct = previousAreaSafety[topic.id] !== undefined ? previousAreaSafety[topic.id] : 0;
+                                    const diff = currentPct - prevPct;
+
+                                    return (
+                                      <div key={topic.id} className={`flex items-center justify-between p-2.5 rounded-xl border text-xs font-bold ${
+                                        isNightMode ? 'bg-slate-950 border-slate-800' : 'bg-slate-50 border-slate-100'
+                                      }`}>
+                                        <div className="flex items-center gap-2">
+                                          <span className="font-extrabold">{topic.room}</span>
+                                        </div>
+                                        <div className="flex items-center gap-1.5">
+                                          <span className="text-slate-400 line-through font-normal text-[10px]">{prevPct}%</span>
+                                          <span className={`px-2 py-0.5 rounded-md text-[10px] font-black ${
+                                            diff > 0 
+                                              ? 'bg-emerald-100 text-emerald-800 dark:bg-emerald-950/40 dark:text-emerald-400' 
+                                              : diff < 0 
+                                                ? 'bg-rose-100 text-rose-800 dark:bg-rose-950/40 dark:text-rose-400'
+                                                : 'bg-slate-100 text-slate-800 dark:bg-slate-800 dark:text-slate-300'
+                                          }`}>
+                                            {currentPct}% {diff > 0 ? `▲ +${diff}%` : diff < 0 ? `▼ ${diff}%` : '─'}
+                                          </span>
+                                        </div>
+                                      </div>
+                                    );
+                                  })}
+                                </div>
+                              </div>
+
+                              <div className="flex flex-col gap-2 pt-2 border-t border-slate-100 dark:border-slate-800">
+                                <button
+                                  id="snapshot-trends-btn"
+                                  type="button"
+                                  onClick={handleSnapshotSafety}
+                                  className="w-full py-2 bg-indigo-600 hover:bg-indigo-700 active:scale-[0.98] text-white rounded-xl text-[10px] font-black uppercase tracking-wider transition-all flex items-center justify-center gap-1.5 shadow-sm shadow-indigo-600/10 cursor-pointer"
+                                  title="Fijar porcentajes actuales como el nuevo punto de referencia anterior"
+                                >
+                                  <Camera className="w-3.5 h-3.5" />
+                                  <span>Capturar Estado como Anterior</span>
+                                </button>
+
+                                <button
+                                  id="reset-trends-baseline-btn"
+                                  type="button"
+                                  onClick={handleResetBaseline}
+                                  className={`w-full py-2 border rounded-xl text-[10px] font-black uppercase tracking-wider transition-all flex items-center justify-center gap-1.5 cursor-pointer ${
+                                    isNightMode
+                                      ? 'bg-slate-800 border-slate-700 hover:bg-slate-700 text-slate-300 hover:text-white'
+                                      : 'bg-slate-50 border-slate-200 hover:bg-slate-100 text-slate-600 hover:text-slate-900'
+                                  }`}
+                                  title="Restaurar comparativas anteriores a los valores iniciales por defecto"
+                                >
+                                  <RotateCcw className="w-3.5 h-3.5" />
+                                  <span>Restaurar Comparativas</span>
+                                </button>
+                              </div>
+                            </div>
+                          </div>
+                        )}
+                      </div>
+
+                      {displayedPreventionTopics.length === 0 && (
+                        <div className={`col-span-1 md:col-span-3 text-center py-12 rounded-3xl border shadow-sm ${isNightMode ? 'bg-slate-900 border-slate-800' : 'bg-white border-slate-100'}`}>
+                          <p className={`text-sm font-semibold ${isNightMode ? 'text-slate-400' : 'text-slate-500'}`}>No se encontraron habitaciones que coincidan con su búsqueda.</p>
+                        </div>
+                      )}
+
+                      {displayedPreventionTopics.map((topic) => {
                       const securedCount = topic.hazards.filter(h => h.completed).length;
                       const isFullySecured = securedCount === topic.hazards.length;
 
@@ -1632,7 +2710,13 @@ export default function App() {
                         borderColor: ["#f1f5f9", "#60a5fa", "#f1f5f9"]
                       } : {}}
                       transition={{ duration: 1.5, ease: "easeInOut" }}
-                      className={`rounded-3xl p-5 shadow-sm space-y-4 text-left flex flex-col justify-between h-full overflow-hidden relative transition-all duration-300 hover:scale-[1.02] hover:shadow-xl focus:outline-none focus:ring-2 focus:ring-blue-500 ${isNightMode ? 'bg-slate-900 border border-slate-800' : isAccessibilityMode ? 'bg-white border-[3px] border-black' : 'bg-white border-0 shadow-[0_8px_30px_rgb(0,0,0,0.04)]'}`}
+                      className={`rounded-3xl p-5 space-y-4 text-left flex flex-col justify-between h-full overflow-hidden relative transition-all duration-300 ease-out hover:scale-[1.03] hover:-translate-y-1 focus:outline-none focus:ring-2 focus:ring-blue-500 ${
+                        isNightMode 
+                          ? 'bg-slate-900 border border-slate-800 shadow-sm hover:shadow-[0_20px_50px_rgba(99,102,241,0.15)]' 
+                          : isAccessibilityMode 
+                            ? 'bg-white border-[3px] border-black hover:shadow-[0_20px_50px_rgba(0,0,0,0.2)]' 
+                            : 'bg-white border border-slate-100 shadow-[0_8px_30px_rgb(0,0,0,0.04)] hover:shadow-[0_20px_50px_rgba(0,0,0,0.12)]'
+                      }`}
                     >
                       <AnimatePresence>
                         {completedAreaId === topic.id && (
@@ -1855,6 +2939,7 @@ export default function App() {
                             Modo Enfoque
                           </button>
                           <button
+                            id={`share-btn-${topic.id}`}
                             onClick={() => handleShareArea(topic, securedCount)}
                             className={`flex-1 py-2.5 font-bold text-sm rounded-xl transition-colors flex items-center justify-center gap-1.5 border focus:outline-none focus:ring-2 focus:ring-blue-500/50 ${
                               isNightMode ? 'bg-slate-800 hover:bg-slate-700 text-slate-300 border-slate-700' : 'bg-slate-50 hover:bg-slate-100 text-slate-700 border-slate-200'
@@ -1867,7 +2952,7 @@ export default function App() {
                       </div>
                     </motion.div>
                   );
-                }))}
+                })}</>)}
                 </motion.div>
               )}
               
@@ -2296,6 +3381,17 @@ export default function App() {
               <GrandmaTips />
             </motion.div>
           )}
+
+          {activeTab === 'health' && (
+            <motion.div
+              initial={{ opacity: 0, y: 10 }}
+              animate={{ opacity: 1, y: 0 }}
+              exit={{ opacity: 0, y: -10 }}
+              transition={{ duration: 0.2 }}
+            >
+              <ChildHealthTracker />
+            </motion.div>
+          )}
         </AnimatePresence>
       </main>
 
@@ -2455,6 +3551,19 @@ export default function App() {
         )}
       </AnimatePresence>
 
+      {/* Area Completion Medal Celebration */}
+      <AreaCompletionMedal
+        roomName={completedMedalRoom}
+        isOpen={completedMedalRoom !== null}
+        onClose={() => {
+          const previousRoom = completedMedalRoom;
+          setCompletedMedalRoom(null);
+          if (previousRoom) {
+            setRecheckModalData({ isOpen: true, topicName: previousRoom });
+          }
+        }}
+      />
+
       {/* Recheck Reminder Modal */}
       <AnimatePresence>
         {recheckModalData.isOpen && (
@@ -2540,6 +3649,375 @@ export default function App() {
               >
                 Entendido
               </button>
+            </motion.div>
+          </motion.div>
+        )}
+      </AnimatePresence>
+
+      {/* AI Summary Report Modal */}
+      <AnimatePresence>
+        {showSummaryReportModal && (
+          <motion.div
+            id="summary-report-modal-overlay"
+            initial={{ opacity: 0 }}
+            animate={{ opacity: 1 }}
+            exit={{ opacity: 0 }}
+            className="fixed inset-0 z-[100] bg-slate-900/60 backdrop-blur-sm flex items-center justify-center p-4"
+          >
+            <motion.div
+              id="summary-report-modal-card"
+              initial={{ scale: 0.95, opacity: 0, y: 20 }}
+              animate={{ scale: 1, opacity: 1, y: 0 }}
+              exit={{ scale: 0.95, opacity: 0, y: 20 }}
+              className={`rounded-3xl p-6 md:p-8 max-w-2xl w-full shadow-2xl relative text-left flex flex-col max-h-[85vh] ${
+                isNightMode ? 'bg-slate-900 text-white' : 'bg-white text-slate-800'
+              }`}
+            >
+              <button
+                id="close-summary-report-modal-btn"
+                type="button"
+                onClick={() => setShowSummaryReportModal(false)}
+                className={`absolute top-4 right-4 p-2 rounded-full transition-colors cursor-pointer ${
+                  isNightMode ? 'text-slate-400 hover:bg-slate-800 hover:text-white' : 'text-slate-400 hover:bg-slate-100 hover:text-slate-900'
+                }`}
+              >
+                <X className="w-5 h-5" />
+              </button>
+
+              <div className="flex items-center gap-3 mb-4">
+                <div className="p-3 bg-teal-100 dark:bg-teal-900/30 rounded-2xl">
+                  <Sparkles className="w-6 h-6 text-teal-600 dark:text-teal-400" />
+                </div>
+                <div>
+                  <h2 className="text-xl font-black">Resumen Ejecutivo de Vulnerabilidades</h2>
+                  <p className={`text-xs font-semibold ${isNightMode ? 'text-slate-400' : 'text-slate-500'}`}>
+                    Análisis clínico-pediátrico de los riesgos en tu hogar
+                  </p>
+                </div>
+              </div>
+
+              <div className={`flex-1 overflow-y-auto my-4 p-5 rounded-2xl border ${
+                isNightMode ? 'bg-slate-950 border-slate-800' : 'bg-slate-50 border-slate-100'
+              }`}>
+                {isLoadingSummaryReport ? (
+                  <div className="flex flex-col items-center justify-center py-12 gap-4 text-center">
+                    <div className="relative">
+                      <div className="w-12 h-12 border-4 border-teal-500/30 border-t-teal-600 rounded-full animate-spin"></div>
+                      <Sparkles className="w-5 h-5 text-teal-500 absolute top-1/2 left-1/2 -translate-x-1/2 -translate-y-1/2 animate-pulse" />
+                    </div>
+                    <div className="space-y-1 max-w-sm">
+                      <p className="text-sm font-black text-teal-600 dark:text-teal-400">Analizando tu hogar...</p>
+                      <p className={`text-xs font-medium ${isNightMode ? 'text-slate-400' : 'text-slate-500'} leading-relaxed`}>
+                        Nuestro pediatra virtual está evaluando las medidas pendientes y compilando un plan de acción preventivo.
+                      </p>
+                    </div>
+                  </div>
+                ) : (
+                  <div className="markdown-body">
+                    <div className={`prose dark:prose-invert max-w-none text-sm leading-relaxed whitespace-pre-wrap ${
+                      isNightMode ? 'text-slate-300' : 'text-slate-600'
+                    }`}>
+                      <ReactMarkdown>{summaryReportText}</ReactMarkdown>
+                    </div>
+                  </div>
+                )}
+              </div>
+
+              <div className="flex flex-col sm:flex-row gap-3 pt-2">
+                {!isLoadingSummaryReport && summaryReportText && (
+                  <button
+                    id="copy-summary-report-btn"
+                    type="button"
+                    onClick={handleCopySummary}
+                    className={`flex-1 py-3 font-bold rounded-xl text-sm transition-all flex items-center justify-center gap-2 cursor-pointer ${
+                      copied 
+                        ? 'bg-emerald-600 text-white shadow-lg shadow-emerald-600/20' 
+                        : (isNightMode ? 'bg-slate-800 hover:bg-slate-700 text-white' : 'bg-slate-100 hover:bg-slate-200 text-slate-700')
+                    }`}
+                  >
+                    <Share2 className="w-4 h-4" />
+                    <span>{copied ? '¡Copiado!' : 'Copiar Informe'}</span>
+                  </button>
+                )}
+                <button
+                  id="confirm-close-summary-report-modal-btn"
+                  type="button"
+                  onClick={() => setShowSummaryReportModal(false)}
+                  className="flex-1 py-3 bg-teal-600 hover:bg-teal-700 text-white font-black rounded-xl text-sm transition-all shadow-md shadow-teal-600/10 cursor-pointer text-center"
+                >
+                  Entendido
+                </button>
+              </div>
+            </motion.div>
+          </motion.div>
+        )}
+      </AnimatePresence>
+
+      {/* General Inspection Scheduler Modal */}
+      <AnimatePresence>
+        {showGeneralInspectionModal && (
+          <motion.div
+            initial={{ opacity: 0 }}
+            animate={{ opacity: 1 }}
+            exit={{ opacity: 0 }}
+            className="fixed inset-0 z-[60] bg-slate-900/60 backdrop-blur-sm flex items-center justify-center p-4"
+          >
+            <motion.div
+              initial={{ scale: 0.95, opacity: 0, y: 20 }}
+              animate={{ scale: 1, opacity: 1, y: 0 }}
+              exit={{ scale: 0.95, opacity: 0, y: 20 }}
+              className="bg-white rounded-3xl p-6 md:p-8 max-w-md w-full shadow-2xl relative text-left"
+            >
+              <div className="absolute top-0 right-0 -mr-3 -mt-3 w-12 h-12 bg-indigo-100 rounded-full flex items-center justify-center border-4 border-white shadow-sm">
+                <Calendar className="w-5 h-5 text-indigo-600" />
+              </div>
+
+              <h2 className="text-xl font-black text-slate-800 mb-2">Agendar Inspección General</h2>
+              <p className="text-sm text-slate-500 mb-6 leading-relaxed font-semibold">
+                Programa un recordatorio único en tu calendario para realizar una revisión exhaustiva del checklist completo de seguridad en todas las habitaciones del hogar y descarga un reporte en PDF con todas las medidas.
+              </p>
+
+              <div className="space-y-4 mb-6">
+                <div className="flex flex-col gap-1.5">
+                  <label className="text-[10px] font-extrabold uppercase tracking-wider text-slate-400">
+                    Fecha de la Inspección
+                  </label>
+                  <input
+                    type="date"
+                    value={generalInspectionDate}
+                    onChange={(e) => setGeneralInspectionDate(e.target.value)}
+                    className="w-full px-4 py-3 rounded-xl text-sm font-bold bg-slate-50 text-slate-700 border border-slate-200 focus:ring-2 focus:ring-indigo-500 focus:outline-none"
+                  />
+                </div>
+              </div>
+
+              <div className="flex flex-col sm:flex-row gap-3">
+                <button
+                  type="button"
+                  onClick={() => {
+                    handleDownloadGeneralInspectionICS();
+                    setShowGeneralInspectionModal(false);
+                  }}
+                  className="flex-1 py-3 bg-indigo-600 hover:bg-indigo-700 active:scale-[0.98] text-white font-black rounded-xl text-xs uppercase tracking-wider transition-all flex items-center justify-center gap-2 shadow-md shadow-indigo-600/10 cursor-pointer"
+                >
+                  <Calendar className="w-4 h-4" />
+                  Confirmar y Agendar
+                </button>
+                <button
+                  type="button"
+                  onClick={() => setShowGeneralInspectionModal(false)}
+                  className="py-3 px-5 bg-slate-100 hover:bg-slate-200 active:scale-[0.98] text-slate-700 font-bold rounded-xl text-xs uppercase tracking-wider transition-all cursor-pointer"
+                >
+                  Cancelar
+                </button>
+              </div>
+            </motion.div>
+          </motion.div>
+        )}
+      </AnimatePresence>
+
+      {/* API Key Settings Modal */}
+      <AnimatePresence>
+        {isSettingsOpen && (
+          <motion.div
+            initial={{ opacity: 0 }}
+            animate={{ opacity: 1 }}
+            exit={{ opacity: 0 }}
+            className="fixed inset-0 z-50 bg-slate-900/60 backdrop-blur-sm flex items-center justify-center p-4"
+          >
+            <motion.div
+              initial={{ scale: 0.95, opacity: 0, y: 20 }}
+              animate={{ scale: 1, opacity: 1, y: 0 }}
+              exit={{ scale: 0.95, opacity: 0, y: 20 }}
+              className="bg-white rounded-3xl p-6 md:p-8 max-w-lg w-full shadow-2xl relative text-left"
+            >
+              <div className="absolute top-0 right-0 -mr-3 -mt-3 w-12 h-12 bg-rose-100 rounded-full flex items-center justify-center border-4 border-white shadow-sm">
+                <Settings className="w-5 h-5 text-rose-600" />
+              </div>
+
+              <h2 className="text-xl font-black text-slate-800 mb-2">Configuración y Accesibilidad</h2>
+              <p className="text-sm text-slate-500 mb-5 leading-relaxed font-semibold">
+                Personaliza la experiencia de navegación, asistencia de voz por dictado, lectura automática y claves de inteligencia artificial.
+              </p>
+
+              <div className="space-y-5 mb-6">
+                {/* Voice Assistant Auto-Read Settings Card */}
+                <div className="bg-rose-50/50 rounded-2xl p-4 border border-rose-100/70 space-y-3">
+                  <div className="flex items-center justify-between gap-4">
+                    <div className="flex items-center gap-2">
+                      <div className="w-8 h-8 rounded-lg bg-rose-100 flex items-center justify-center shrink-0">
+                        <Volume2 className="w-4 h-4 text-rose-600" />
+                      </div>
+                      <div>
+                        <span className="font-black text-xs text-slate-800 block">Lectura por Voz Automática</span>
+                        <span className="text-[10px] font-bold text-slate-400 block uppercase tracking-wider">Accesibilidad de Voz</span>
+                      </div>
+                    </div>
+                    
+                    <label className="relative inline-flex items-center cursor-pointer shrink-0">
+                      <input 
+                        type="checkbox" 
+                        checked={autoRead}
+                        onChange={(e) => {
+                          const val = e.target.checked;
+                          setAutoRead(val);
+                          if (val) {
+                            speakText('Lectura automática activada. Escucharás los consejos de la abuela y primeros auxilios al cambiar de pantalla.', true);
+                          } else {
+                            stopSpeaking();
+                          }
+                        }}
+                        className="sr-only peer"
+                      />
+                      <div className="w-11 h-6 bg-slate-200 peer-focus:outline-none rounded-full peer peer-checked:after:translate-x-full peer-checked:after:border-white after:content-[\'\'] after:absolute after:top-[2px] after:left-[2px] after:bg-white after:border-slate-300 after:border after:rounded-full after:h-5 after:w-5 after:transition-all peer-checked:bg-rose-600"></div>
+                    </label>
+                  </div>
+                  <p className="text-[11px] text-slate-500 leading-relaxed font-semibold">
+                    Lee automáticamente en voz alta las guías de <strong>primeros auxilios</strong> paso a paso y los <strong>consejos de la abuela</strong> al navegar entre las secciones. Ideal para padres ocupados o con las manos ocupadas.
+                  </p>
+                </div>
+
+                {/* Preferred Notification Time Selector Card */}
+                <div className="bg-indigo-50/50 rounded-2xl p-4 border border-indigo-100/70 space-y-3">
+                  <div className="flex items-center justify-between gap-4">
+                    <div className="flex items-center gap-2">
+                      <div className="w-8 h-8 rounded-lg bg-indigo-100 flex items-center justify-center shrink-0">
+                        <Bell className="w-4 h-4 text-indigo-600" />
+                      </div>
+                      <div>
+                        <span className="font-black text-xs text-slate-800 block">Horario de Notificaciones</span>
+                        <span className="text-[10px] font-bold text-slate-400 block uppercase tracking-wider">Recordatorio Semanal</span>
+                      </div>
+                    </div>
+                    
+                    <div className="flex items-center gap-2">
+                      <input 
+                        type="time" 
+                        value={preferredNotificationTime}
+                        onChange={(e) => {
+                          const val = e.target.value;
+                          setPreferredNotificationTime(val);
+                          localStorage.setItem('amapola_notification_time', val);
+                        }}
+                        className={`px-2.5 py-1 border rounded-xl text-xs font-bold focus:outline-none focus:ring-2 focus:ring-indigo-500 shrink-0 ${
+                          isNightMode ? 'bg-slate-800 border-slate-700 text-white' : 'bg-white border-slate-200 text-slate-800'
+                        }`}
+                      />
+                    </div>
+                  </div>
+                  <p className="text-[11px] text-slate-500 leading-relaxed font-semibold">
+                    Selecciona la hora del día en la que deseas recibir el recordatorio semanal para inspeccionar la seguridad de tu hogar.
+                  </p>
+                  
+                  <div className="flex items-center justify-between gap-2 pt-1 border-t border-indigo-100/40">
+                    <span className="text-[10px] text-slate-400 font-bold uppercase tracking-wider">
+                      Estado: {notificationsEnabled ? '🔔 Activado' : '🔕 Desactivado'}
+                    </span>
+                    <button
+                      type="button"
+                      onClick={sendTestNotification}
+                      className="text-[10px] font-black uppercase text-indigo-600 hover:text-indigo-700 hover:underline cursor-pointer"
+                    >
+                      Probar Notificación
+                    </button>
+                  </div>
+                </div>
+
+                <div className="border-t border-slate-100 pt-4">
+                  <label className="block text-xs font-bold text-slate-400 uppercase tracking-wider mb-2">Clave API de Gemini (Opcional)</label>
+                  <p className="text-[11px] text-slate-500 mb-3 font-semibold leading-relaxed">
+                    Si el asistente inteligente del servidor está sin créditos, puedes guardar tu propia clave de Google AI Studio de manera local.
+                  </p>
+                  <div className="relative rounded-xl border border-slate-200 focus-within:border-rose-500 focus-within:ring-2 focus-within:ring-rose-200 transition-all bg-slate-50">
+                    <input
+                      type={showApiKey ? "text" : "password"}
+                      value={tempApiKey}
+                      onChange={(e) => {
+                        setTempApiKey(e.target.value);
+                        setTestStatus('idle');
+                      }}
+                      placeholder="AIzaSy..."
+                      className="w-full pl-4 pr-12 py-3.5 bg-transparent rounded-xl text-sm font-mono text-slate-800 focus:outline-none"
+                    />
+                    <button
+                      type="button"
+                      onClick={() => setShowApiKey(!showApiKey)}
+                      className="absolute right-3.5 top-1/2 -translate-y-1/2 text-slate-400 hover:text-slate-600 transition-colors cursor-pointer"
+                    >
+                      {showApiKey ? <EyeOff className="w-4 h-4" /> : <Eye className="w-4 h-4" />}
+                    </button>
+                  </div>
+                  <p className="text-[11px] text-slate-400 mt-1.5 font-medium">
+                    ¿No tienes una? Consigue una clave gratuita en <a href="https://aistudio.google.com/" target="_blank" rel="noopener noreferrer" className="text-rose-600 hover:underline font-bold">Google AI Studio</a>.
+                  </p>
+                </div>
+
+                {/* Connection Test Area */}
+                <div className="bg-slate-50 rounded-2xl p-4 border border-slate-100">
+                  <div className="flex items-center justify-between gap-4">
+                    <div className="text-xs font-semibold text-slate-500">
+                      {testStatus === 'idle' && "Prueba si tu clave funciona correctamente."}
+                      {testStatus === 'testing' && (
+                        <span className="flex items-center gap-2 text-rose-600">
+                          <Sparkles className="w-3.5 h-3.5 animate-spin" />
+                          Conectando con la API...
+                        </span>
+                      )}
+                      {testStatus === 'success' && (
+                        <span className="flex items-center gap-1.5 text-emerald-600 font-bold">
+                          <CheckCircle2 className="w-4 h-4" />
+                          ¡Conexión exitosa! Tu clave es válida.
+                        </span>
+                      )}
+                      {testStatus === 'error' && (
+                        <span className="text-red-600 block">
+                          <strong className="block font-black">Error de Conexión:</strong>
+                          <span className="text-[11px] leading-tight block mt-0.5 font-medium opacity-80">{testErrorMessage}</span>
+                        </span>
+                      )}
+                    </div>
+                    
+                    {testStatus !== 'testing' && (
+                      <button
+                        type="button"
+                        onClick={handleTestConnection}
+                        className="px-3.5 py-1.5 bg-slate-900 hover:bg-slate-800 text-white font-bold text-xs rounded-lg transition-colors cursor-pointer shrink-0"
+                      >
+                        Probar Clave
+                      </button>
+                    )}
+                  </div>
+                </div>
+              </div>
+
+              <div className="flex flex-col sm:flex-row gap-3">
+                <button
+                  type="button"
+                  onClick={handleClearApiKey}
+                  className="w-full sm:w-auto px-5 py-3 bg-red-50 hover:bg-red-100 text-red-600 font-bold rounded-xl text-sm transition-colors cursor-pointer"
+                >
+                  Restablecer
+                </button>
+                <div className="flex-1 flex flex-col sm:flex-row gap-3">
+                  <button
+                    type="button"
+                    onClick={() => {
+                      setIsSettingsOpen(false);
+                      setTestStatus('idle');
+                    }}
+                    className="flex-1 py-3 bg-slate-100 hover:bg-slate-200 text-slate-700 font-bold rounded-xl text-sm transition-colors cursor-pointer text-center"
+                  >
+                    Cancelar
+                  </button>
+                  <button
+                    type="button"
+                    onClick={handleSaveApiKey}
+                    className="flex-1 py-3 bg-rose-600 hover:bg-rose-700 text-white font-bold rounded-xl text-sm transition-colors cursor-pointer shadow-md shadow-rose-600/15 text-center"
+                  >
+                    Guardar Clave
+                  </button>
+                </div>
+              </div>
             </motion.div>
           </motion.div>
         )}
@@ -2745,6 +4223,7 @@ export default function App() {
                         
                         <div className="flex flex-col sm:flex-row gap-3 justify-center">
                           <button
+                            id={`share-focus-achievement-btn-${topic.id}`}
                             onClick={() => handleShareArea(topic, securedCount)}
                             className="px-6 py-3 bg-white text-emerald-600 font-bold rounded-xl flex items-center justify-center gap-2 hover:bg-emerald-50 transition-colors"
                           >
@@ -2845,5 +4324,132 @@ export default function App() {
         </div>
       </footer>
     </div>
-  );
+
+    {/* Print-Only Safety Checklist Template */}
+    <div className="print-only hidden print-container p-6 bg-white font-sans text-slate-900">
+      <div className="border-b-4 border-rose-600 pb-4 mb-6">
+        <div className="flex justify-between items-end">
+          <div>
+            <h1 className="text-2xl font-black text-rose-600 tracking-tight flex items-center gap-2">
+              🌺 Amapola Alerta
+            </h1>
+            <p className="text-sm font-bold text-slate-500 uppercase tracking-wider mt-1">
+              Guía de Prevención y Seguridad Infantil en el Hogar
+            </p>
+          </div>
+          <div className="text-right text-xs font-semibold text-slate-400">
+            <p>Fecha de Impresión: {new Date().toLocaleDateString('es-ES')}</p>
+            <p>Progreso General: {completedHazards}/{totalHazards} ({percentSecured}%)</p>
+          </div>
+        </div>
+      </div>
+
+      <div className="space-y-3 mb-6 bg-slate-50 p-4 rounded-xl border border-slate-200">
+        <h2 className="text-xs font-bold text-slate-800 uppercase tracking-widest">Información de Seguridad Crítica:</h2>
+        <p className="text-xs text-slate-600 leading-relaxed font-medium">
+          Mantener un entorno seguro es la mejor manera de prevenir accidentes graves en la infancia. Se recomienda realizar esta auditoría en compañía de todos los cuidadores de su hogar al menos una vez al año. <strong>En caso de emergencia crítica, llame de inmediato al 123 o al 911.</strong>
+        </p>
+      </div>
+
+      <div className="grid grid-cols-1 gap-8">
+        {preventionTopics.map((topic) => {
+          const securedCount = topic.hazards.filter(h => h.completed).length;
+          
+          return (
+            <div key={topic.id} className="border border-slate-300 rounded-2xl p-5 shadow-sm page-break-inside-avoid">
+              <div className="border-b border-slate-200 pb-3 mb-4 flex justify-between items-center">
+                <div className="flex items-center gap-2">
+                  <span className="text-sm font-black text-white bg-blue-600 px-2.5 py-1 rounded-full uppercase tracking-wider">
+                    {topic.room}
+                  </span>
+                  <h3 className="text-lg font-black text-slate-800">{topic.title}</h3>
+                </div>
+                <span className="text-xs font-bold text-slate-500">
+                  Esfuerzo de Adaptación: {topic.effort} • {securedCount}/{topic.hazards.length} Asegurado
+                </span>
+              </div>
+
+              <p className="text-xs text-slate-600 leading-relaxed italic mb-4 font-medium">
+                {topic.guideline}
+              </p>
+
+              <div className="space-y-4">
+                {topic.hazards.map((h) => (
+                  <div key={h.id} className="flex gap-4 items-start border-b border-dashed border-slate-200 pb-3 last:border-0 last:pb-0">
+                    <div className="w-5 h-5 rounded border border-slate-400 shrink-0 flex items-center justify-center mt-0.5 font-bold text-emerald-600 text-sm">
+                      {h.completed ? "✓" : ""}
+                    </div>
+                    <div className="space-y-1 flex-1">
+                      <p className={`text-sm font-bold ${h.completed ? 'text-slate-600 line-through' : 'text-slate-800'}`}>
+                        {h.text}
+                      </p>
+                      <div className="flex flex-wrap gap-x-3 gap-y-1 text-[11px] font-bold text-slate-400">
+                        <span className={`px-1.5 py-0.5 rounded ${
+                          h.urgency === 'Alta' ? 'bg-rose-100 text-rose-700' :
+                          h.urgency === 'Media' ? 'bg-amber-100 text-amber-700' :
+                          'bg-slate-100 text-slate-700'
+                        }`}>
+                          Prioridad: {h.urgency || 'Media'}
+                        </span>
+                        {h.rationale && (
+                          <span className="italic font-medium text-slate-500">
+                            • Justificación médica: {h.rationale}
+                          </span>
+                        )}
+                      </div>
+                    </div>
+                  </div>
+                ))}
+              </div>
+            </div>
+          );
+        })}
+      </div>
+
+      <div className="border-t border-slate-300 mt-12 pt-6 text-center text-xs text-slate-400 font-medium">
+        <p className="font-bold text-slate-600 uppercase tracking-widest text-[10px] mb-1">
+          Amapola Alerta - Portal de Empoderamiento Familiar en Prevención Pediátrica
+        </p>
+        <p>© 2026 Amapola Alerta. Todo el contenido médico es informativo y de prevención.</p>
+      </div>
+
+      {/* Toast Notification */}
+      <AnimatePresence>
+        {toast && (
+          <motion.div
+            initial={{ opacity: 0, y: 50, scale: 0.95 }}
+            animate={{ opacity: 1, y: 0, scale: 1 }}
+            exit={{ opacity: 0, y: 20, scale: 0.95 }}
+            transition={{ type: 'spring', damping: 25, stiffness: 350 }}
+            className="fixed bottom-6 left-6 right-6 md:left-auto md:right-6 md:max-w-md z-[100] pointer-events-auto"
+          >
+            <div className={`p-4 rounded-2xl shadow-xl flex items-center gap-3 border text-left ${
+              toast.type === 'success'
+                ? 'bg-emerald-50 border-emerald-200 text-emerald-800 dark:bg-emerald-950/90 dark:border-emerald-800/50 dark:text-emerald-200'
+                : toast.type === 'error'
+                ? 'bg-rose-50 border-rose-200 text-rose-800 dark:bg-rose-950/90 dark:border-rose-800/50 dark:text-rose-200'
+                : 'bg-indigo-50 border-indigo-200 text-indigo-800 dark:bg-indigo-950/90 dark:border-indigo-800/50 dark:text-indigo-200'
+            }`}>
+              <div className="shrink-0">
+                {toast.type === 'success' && <CheckCircle2 className="w-5 h-5 text-emerald-500" />}
+                {toast.type === 'error' && <AlertTriangle className="w-5 h-5 text-rose-500" />}
+                {toast.type === 'info' && <Info className="w-5 h-5 text-indigo-500" />}
+              </div>
+              <p className="text-xs font-bold leading-relaxed flex-1">
+                {toast.message}
+              </p>
+              <button
+                type="button"
+                onClick={() => setToast(null)}
+                className="p-1 rounded-lg hover:bg-black/5 dark:hover:bg-white/5 transition-colors cursor-pointer shrink-0"
+              >
+                <X className="w-4 h-4 opacity-60 hover:opacity-100" />
+              </button>
+            </div>
+          </motion.div>
+        )}
+      </AnimatePresence>
+    </div>
+  </>
+);
 }

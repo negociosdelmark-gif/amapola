@@ -1,12 +1,13 @@
 import { useState, useEffect, useRef } from 'react';
 import { 
   Heart, ShieldAlert, Phone, Play, Square,
-  ChevronLeft, ChevronRight, AlertTriangle, Mic, MicOff, Info
+  ChevronLeft, ChevronRight, AlertTriangle, Mic, MicOff, Info, Volume2
 } from 'lucide-react';
 import HospitalFinder from './HospitalFinder';
 import FirstAidChat from './FirstAidChat';
 import { ManeuverType } from '../types';
 import { logAnalyticsEvent } from '../lib/firebase';
+import { speakText, stopSpeaking, isAutoReadEnabled } from '../lib/tts';
 
 interface Step {
   title: string;
@@ -156,6 +157,20 @@ export default function EmergencyPanel() {
 
   const maneuverData = MANEUVERS[activeManeuver];
   const currentStep = maneuverData.steps[stepIndex];
+
+  // Read out steps automatically if voice auto-read is enabled
+  useEffect(() => {
+    if (isAutoReadEnabled() && currentStep) {
+      const stepText = `Paso ${stepIndex + 1}: ${currentStep.title}. ${currentStep.desc}. ${currentStep.alert || ''}`;
+      speakText(stepText);
+    }
+  }, [activeManeuver, stepIndex, currentStep]);
+
+  useEffect(() => {
+    return () => {
+      stopSpeaking();
+    };
+  }, []);
 
   // Metronome Sound Engine (using Web Audio API so it's 100% native and offline-ready)
   const toggleMetronome = () => {
@@ -421,12 +436,25 @@ export default function EmergencyPanel() {
 
           {/* Active Step Details */}
           <div className="space-y-4 py-2">
-            <h4 className="text-base md:text-lg font-black text-slate-900 flex items-center gap-2">
-              <span className="flex items-center justify-center w-6 h-6 rounded-full bg-slate-900 text-white text-xs font-black">
-                {stepIndex + 1}
-              </span>
-              {currentStep.title}
-            </h4>
+            <div className="flex items-center justify-between gap-4">
+              <h4 className="text-base md:text-lg font-black text-slate-900 flex items-center gap-2">
+                <span className="flex items-center justify-center w-6 h-6 rounded-full bg-slate-900 text-white text-xs font-black">
+                  {stepIndex + 1}
+                </span>
+                {currentStep.title}
+              </h4>
+              <button
+                type="button"
+                onClick={() => {
+                  const stepText = `Paso ${stepIndex + 1}: ${currentStep.title}. ${currentStep.desc}. ${currentStep.alert || ''}`;
+                  speakText(stepText, true); // Force speaking on button click
+                }}
+                className="p-2 bg-slate-50 hover:bg-slate-100 border border-slate-200 text-slate-600 hover:text-slate-950 rounded-xl transition-all shadow-sm cursor-pointer"
+                title="Escuchar este paso en voz alta"
+              >
+                <Volume2 className="w-4 h-4" />
+              </button>
+            </div>
             
             <p className="text-sm text-slate-600 leading-relaxed font-medium">
               {currentStep.desc}

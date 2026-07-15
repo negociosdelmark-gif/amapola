@@ -1,7 +1,8 @@
 import { useState, useEffect } from 'react';
-import { Calendar, CheckCircle, Clock, Search, Printer, ShieldAlert, CheckCircle2, Award, CalendarPlus } from 'lucide-react';
+import { Calendar, CheckCircle, Clock, Search, Printer, ShieldAlert, CheckCircle2, Award, Sparkles } from 'lucide-react';
 import { Vaccine } from '../types';
 import { logAnalyticsEvent } from '../lib/firebase';
+import { BarChart, Bar, XAxis, YAxis, CartesianGrid, Tooltip, Legend, ResponsiveContainer } from 'recharts';
 
 const INITIAL_VACCINES: Vaccine[] = [
   { id: '1', name: 'BCG (Tuberculosis)', disease: 'Tuberculosis meningitis', ageMonths: 0, ageText: 'Recién Nacido', status: 'PENDING' },
@@ -121,6 +122,47 @@ export default function VaccineTracker() {
   const pendingCount = vaccines.filter(v => v.status === 'PENDING').length;
   const completionPercent = vaccines.length ? Math.round((completedCount / vaccines.length) * 100) : 0;
 
+  const getChildAgeMonths = (): number => {
+    if (!childBirthdate) return 0;
+    const birth = new Date(childBirthdate);
+    const now = new Date();
+    const yearsDiff = now.getFullYear() - birth.getFullYear();
+    const monthsDiff = now.getMonth() - birth.getMonth();
+    const totalMonths = yearsDiff * 12 + monthsDiff;
+    return Math.max(0, totalMonths);
+  };
+
+  const childAgeMonths = childBirthdate ? getChildAgeMonths() : null;
+
+  const upcomingVaccinesNext12Months = vaccines.filter(v => {
+    if (childAgeMonths === null) {
+      // Default fallback: show vaccines up to 12 months if no birthdate is set
+      return v.ageMonths <= 12;
+    }
+    // Show vaccines in the window [childAgeMonths, childAgeMonths + 12]
+    return v.ageMonths >= childAgeMonths && v.ageMonths <= childAgeMonths + 12;
+  }).sort((a, b) => a.ageMonths - b.ageMonths);
+
+  const milestoneData = [
+    { ageMonths: 0, label: 'Recién Nacido', name: 'R. Nacido' },
+    { ageMonths: 2, label: '2 meses', name: '2 meses' },
+    { ageMonths: 4, label: '4 meses', name: '4 meses' },
+    { ageMonths: 6, label: '6 meses', name: '6 meses' },
+    { ageMonths: 12, label: '12 meses', name: '12 meses' },
+    { ageMonths: 18, label: '18 meses', name: '18 meses' },
+    { ageMonths: 60, label: '5 años', name: '5 años' }
+  ].map(m => {
+    const vaccinesForAge = vaccines.filter(v => v.ageMonths === m.ageMonths);
+    const aplicadas = vaccinesForAge.filter(v => v.status === 'COMPLETED').length;
+    const pendientes = vaccinesForAge.filter(v => v.status === 'PENDING').length;
+    return {
+      ...m,
+      'Aplicadas': aplicadas,
+      'Pendientes': pendientes,
+      'Total': vaccinesForAge.length
+    };
+  });
+
   const ages = Array.from(new Set(vaccines.map(v => v.ageText)));
 
   const filteredVaccines = vaccines.filter(v => {
@@ -213,6 +255,156 @@ export default function VaccineTracker() {
             <div className="text-xs font-black text-slate-400 uppercase tracking-widest">Pendientes / Siguientes</div>
             <div className="text-xl font-black text-amber-700">{pendingCount} dosis</div>
             <p className="text-sm text-slate-500 leading-relaxed font-medium">Verifica las fechas próximas.</p>
+          </div>
+        </div>
+      </div>
+
+      {/* Dashboard de Vacunación con Recharts */}
+      <div className="bg-slate-50/50 border border-slate-100 rounded-3xl p-6 md:p-8 space-y-6">
+        <div className="flex flex-col md:flex-row md:items-center justify-between gap-4">
+          <div className="space-y-1">
+            <h4 className="text-sm font-black text-slate-900 flex items-center gap-2">
+              <Sparkles className="w-4 h-4 text-emerald-500" />
+              Cronograma Inteligente de Vacunación (Siguientes 12 Meses)
+            </h4>
+            <p className="text-xs text-slate-500 font-medium">
+              {childBirthdate 
+                ? `Visualización personalizada para ${childName} (${childAgeMonths} meses de edad).`
+                : "Agrega la fecha de nacimiento arriba para activar el cronograma personalizado de tu bebé."
+              }
+            </p>
+          </div>
+          {childAgeMonths !== null && (
+            <span className="text-xs font-black bg-rose-50 text-rose-700 px-3 py-1.5 rounded-xl border border-rose-100 shrink-0">
+              Edad de {childName}: {childAgeMonths} {childAgeMonths === 1 ? 'mes' : 'meses'}
+            </span>
+          )}
+        </div>
+
+        <div className="grid grid-cols-1 lg:grid-cols-12 gap-8 items-start">
+          {/* Gráfico de Recharts (Col 7) */}
+          <div className="lg:col-span-7 bg-white p-4 md:p-6 rounded-2xl border border-slate-100 shadow-sm">
+            <h5 className="text-xs font-black text-slate-400 uppercase tracking-widest mb-4">Inmunización por Grupos de Edad</h5>
+            <div className="h-64 w-full text-xs font-medium">
+              <ResponsiveContainer width="100%" height="100%">
+                <BarChart
+                  data={milestoneData}
+                  margin={{ top: 10, right: 10, left: -20, bottom: 0 }}
+                >
+                  <CartesianGrid strokeDasharray="3 3" vertical={false} stroke="#f1f5f9" />
+                  <XAxis 
+                    dataKey="name" 
+                    tickLine={false} 
+                    axisLine={false}
+                    tick={{ fill: '#64748b', fontWeight: 600, fontSize: 10 }}
+                  />
+                  <YAxis 
+                    tickLine={false} 
+                    axisLine={false}
+                    tick={{ fill: '#64748b', fontWeight: 600, fontSize: 10 }}
+                    allowDecimals={false}
+                  />
+                  <Tooltip 
+                    contentStyle={{ 
+                      backgroundColor: '#1e293b', 
+                      borderRadius: '12px', 
+                      border: 'none',
+                      color: '#f8fafc',
+                      fontSize: '11px',
+                      fontWeight: 600,
+                      boxShadow: '0 10px 15px -3px rgb(0 0 0 / 0.1)'
+                    }}
+                    cursor={{ fill: '#f8fafc', opacity: 0.4 }}
+                  />
+                  <Legend 
+                    verticalAlign="top" 
+                    height={36}
+                    iconType="circle"
+                    iconSize={8}
+                    wrapperStyle={{ fontSize: '11px', fontWeight: 700, paddingBottom: '10px' }}
+                  />
+                  <Bar dataKey="Aplicadas" name="Aplicadas (Dosis)" stackId="a" fill="#10b981" />
+                  <Bar dataKey="Pendientes" name="Pendientes (Dosis)" stackId="a" fill="#cbd5e1" />
+                </BarChart>
+              </ResponsiveContainer>
+            </div>
+            <p className="text-[10px] text-slate-400 text-center mt-3 font-semibold">
+              * Las barras muestran las dosis aplicadas en verde y pendientes en gris para cada hito de edad.
+            </p>
+          </div>
+
+          {/* Siguientes Vacunas / Próximos Hitos (Col 5) */}
+          <div className="lg:col-span-5 space-y-4">
+            <div className="flex items-center justify-between">
+              <h5 className="text-xs font-black text-slate-400 uppercase tracking-widest">
+                {childBirthdate ? `Hitos en los Próximos 12 Meses` : "Primeros 12 Meses de Vida"}
+              </h5>
+              <span className="text-[10px] font-bold bg-slate-100 text-slate-600 px-2 py-0.5 rounded-full">
+                {upcomingVaccinesNext12Months.length} dosis encontradas
+              </span>
+            </div>
+
+            <div className="space-y-2.5 max-h-[250px] overflow-y-auto pr-1">
+              {upcomingVaccinesNext12Months.length === 0 ? (
+                <div className="bg-white p-6 rounded-2xl border border-slate-100 text-center text-xs font-semibold text-slate-400">
+                  No hay vacunas programadas en esta ventana de edad. ¡Vas al día!
+                </div>
+              ) : (
+                upcomingVaccinesNext12Months.map(vac => {
+                  const isCompleted = vac.status === 'COMPLETED';
+                  return (
+                    <div 
+                      key={vac.id} 
+                      className={`p-3.5 rounded-xl border transition-all flex items-center justify-between gap-3 bg-white hover:border-slate-300 ${
+                        isCompleted ? 'border-emerald-100 bg-emerald-50/5' : 'border-slate-100'
+                      }`}
+                    >
+                      <div className="space-y-0.5 min-w-0">
+                        <div className="flex items-center gap-1.5 flex-wrap">
+                          <span className="text-[10px] font-extrabold px-1.5 py-0.5 rounded bg-slate-100 text-slate-600">
+                            {vac.ageText}
+                          </span>
+                          {isCompleted ? (
+                            <span className="text-[9px] font-black text-emerald-600 bg-emerald-100 px-1.5 py-0.5 rounded-sm flex items-center gap-0.5">
+                              ✓ Aplicada
+                            </span>
+                          ) : (
+                            <span className="text-[9px] font-black text-amber-600 bg-amber-50 px-1.5 py-0.5 rounded-sm flex items-center gap-0.5 animate-pulse">
+                              ⏳ Pendiente
+                            </span>
+                          )}
+                        </div>
+                        <h6 className="font-bold text-slate-800 text-xs truncate">{vac.name}</h6>
+                        <p className="text-[11px] text-slate-400 truncate leading-relaxed">
+                          {vac.disease}
+                        </p>
+                      </div>
+
+                      {!isCompleted && (
+                        <button
+                          onClick={() => handleMarkComplete(vac)}
+                          className="px-2.5 py-1.5 bg-emerald-600 hover:bg-emerald-700 text-white font-extrabold rounded-lg text-[10px] shadow-xs cursor-pointer transition-all shrink-0"
+                        >
+                          Registrar
+                        </button>
+                      )}
+                    </div>
+                  );
+                })
+              )}
+            </div>
+            
+            {childBirthdate && (
+              <div className="bg-emerald-50/35 border border-emerald-100/50 p-4 rounded-2xl text-xs font-semibold text-emerald-800 leading-relaxed space-y-1">
+                <span className="flex items-center gap-1 font-bold">
+                  <ShieldAlert className="w-3.5 h-3.5 text-emerald-600 shrink-0" />
+                  Estado de Protección:
+                </span>
+                <p className="text-[11px] text-emerald-700 font-medium leading-relaxed">
+                  {childName} ha completado {upcomingVaccinesNext12Months.filter(v => v.status === 'COMPLETED').length} de {upcomingVaccinesNext12Months.length} vacunas programadas en esta ventana de 12 meses. ¡Sigue así!
+                </p>
+              </div>
+            )}
           </div>
         </div>
       </div>
